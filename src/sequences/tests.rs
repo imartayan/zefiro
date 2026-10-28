@@ -64,7 +64,8 @@ fn run(
     let (nb_seq, stream) = state.read_header(block)?;
     let mut out = [history, &vec![0; capacity]].concat();
     let end = history.len() + capacity;
-    let block_end = state.execute_block(nb_seq, stream, &literals, &mut out, history.len()..end)?;
+    let block_end =
+        state.execute_block(nb_seq, stream, &literals, &mut out, history.len()..end, 0)?;
     Ok(out[history.len()..block_end].to_vec())
 }
 
@@ -146,7 +147,7 @@ fn repeat_mode_needs_a_block_that_started_decoding() {
     let mut out = [0; 10];
     assert!(
         state
-            .execute_block(nb_seq, stream, &literals, &mut out, 0..10)
+            .execute_block(nb_seq, stream, &literals, &mut out, 0..10, 0)
             .is_err()
     );
     assert!(state.read_header(&repeat).is_ok());
@@ -328,4 +329,89 @@ fn short_offsets_are_flagged_by_the_offset_table_and_kept_by_repeat_mode() {
         &mut state,
         &[1, modes(RLE, PREDEFINED, RLE), 0, 0, 0x80]
     ));
+}
+
+// Output (or error) and repeat offsets of one of the two sequence loops.
+fn run_loop<const PREFETCH: bool>(
+    block: &[u8],
+    literals: &[u8],
+    history: &[u8],
+    capacity: usize,
+) -> Result<(Vec<u8>, [u32; 3]), Error> {
+    let mut state = SequencesState::new();
+    let (padded, len) = self::literals(literals);
+    let literals = Literals {
+        padded: &padded,
+        len,
+        in_input: false,
+    };
+    let (nb_seq, stream) = state.read_header(block)?;
+    let mut out = [history, &vec![0; capacity]].concat();
+    let end = history.len() + capacity;
+    let (op, _, repeat_offsets) = state.run_sequences::<Portable, PREFETCH>(
+        nb_seq,
+        stream,
+        &literals,
+        &mut out,
+        history.len()..end,
+    )?;
+    Ok((out[history.len()..op].to_vec(), repeat_offsets))
+}
+
+#[test]
+fn prefetch_loop_agrees_with_the_regular_loop_except_for_the_stream_end() {
+    // Literal length 2, match length 3, offset code 3 (3 extra bits): 12 sequences.
+    let fields: Vec<_> = (0..12).map(|index| (index % 8, 3)).collect();
+    let literals: Vec<u8> = (0..40).collect();
+    let history = *b"0123456789abcdef";
+    for count in [1, 3, 8, 9, 12] {
+        let block = rle_block(count, (2, 3, 0), &fields[..count as usize]);
+        for capacity in 0..80 {
+            let regular = run_loop::<false>(&block, &literals, &history, capacity);
+            let prefetch = run_loop::<true>(&block, &literals, &history, capacity);
+            assert_eq!(regular, prefetch, "{count} sequences, capacity {capacity}");
+        }
+        for history_len in 0..history.len() {
+            let regular = run_loop::<false>(&block, &literals, &history[..history_len], 80);
+            let prefetch = run_loop::<true>(&block, &literals, &history[..history_len], 80);
+            assert_eq!(
+                regular, prefetch,
+                "{count} sequences, history {history_len}"
+            );
+        }
+    }
+    // A stream with one bit too many: the prefetch loop reports it before it executes the
+    // last 8 sequences, so it hides an output overflow there (libzstd does the same).
+    let mut extra = fields.clone();
+    extra.push((0, 1));
+    let block = rle_block(12, (2, 3, 0), &extra);
+    assert_eq!(
+        run_loop::<false>(&block, &literals, &history, 12 * 5 - 1),
+        Err(Error::DstSizeTooSmall)
+    );
+    assert_eq!(
+        run_loop::<true>(&block, &literals, &history, 12 * 5 - 1),
+        Err(Error::CorruptionDetected)
+    );
+    // Before the 4th sequence only: the error comes from the executed ones first.
+    assert_eq!(
+        run_loop::<true>(&block, &literals, &history, 3 * 5 - 1),
+        Err(Error::DstSizeTooSmall)
+    );
+}
+
+#[test]
+fn prefetch_loop_is_chosen_like_libzstd() {
+    let mut state = SequencesState::new();
+    let predefined = [9, modes(PREDEFINED, PREDEFINED, PREDEFINED), 0];
+    state.read_header(&predefined).unwrap();
+    // Predefined offsets: codes 23 to 28 are 6 of 32 cells, 48 out of 256.
+    assert_eq!(long_offset_share(&state.tables.of), 48);
+    let rle_long = [1, modes(PREDEFINED, RLE, PREDEFINED), 23];
+    let mut state = SequencesState::new();
+    state.read_header(&rle_long).unwrap();
+    assert_eq!(long_offset_share(&state.tables.of), 256);
+    let rle_short = [1, modes(PREDEFINED, RLE, PREDEFINED), 22];
+    state.read_header(&rle_short).unwrap();
+    assert_eq!(long_offset_share(&state.tables.of), 0);
 }

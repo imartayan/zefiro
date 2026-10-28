@@ -17,11 +17,16 @@ use crate::corpus::corpus_dir;
 use crate::{Libzstd, Params, Rng, compress};
 
 const CORPUS_FILES: &[&str] = &["elf_8m", "rust_src_8m", "silesia-small.tar", "words_1m"];
-const LEVELS: &[i32] = &[1, 3, 9, 19];
+const LEVELS: &[i32] = &[1, 3, 9, 19, 22];
 const SMALL_FRAME_SIZES: &[usize] = &[256, 1 << 10, 4 << 10];
 const SMALL_LEVEL: i32 = 3;
 const SMALL_SOURCE_CHUNK: usize = 1 << 20;
 const GENERATED_SIZE: usize = 4 << 20;
+const LONG_WINDOW_LOG: i32 = 27;
+const LONG_LEVEL: i32 = 19;
+// `long27` source: the corpus, then `LONG_COPIED` bytes of pieces of it copied from random places.
+const LONG_COPIED: usize = 24 << 20;
+const LONG_PIECE: Range<usize> = 256..4096;
 const DEFAULT_ROUNDS: usize = 10;
 const MIB: f64 = (1 << 20) as f64;
 const USAGE: &str = "usage: bench [--rounds N] [--case SUBSTRING[,..]] [--impl NAME[,..]] \
@@ -222,11 +227,24 @@ pub fn cases(filters: &[String]) -> Vec<Case> {
         let source = Arc::new(read_corpus_file(file));
         let hash = content_hash(&source);
         for &&level in &levels {
-            let frame = compress_cached(file, &source, hash, level);
-            let range = 0..source.len();
             let name = format!("{file}-l{level}");
+            let frame = compress_cached(&name, &source, hash, &Params::level(level));
+            let range = 0..source.len();
             out.push(Case::new(name, source.clone(), vec![(frame, range)]));
         }
+    }
+
+    if keep("long27") {
+        let source = Arc::new(long_source());
+        let hash = content_hash(&source);
+        let params = Params {
+            window_log: LONG_WINDOW_LOG,
+            long_distance: true,
+            ..Params::level(LONG_LEVEL)
+        };
+        let frame = compress_cached(&format!("long27-l{LONG_LEVEL}"), &source, hash, &params);
+        let range = 0..source.len();
+        out.push(Case::new("long27".into(), source, vec![(frame, range)]));
     }
 
     let small_names: Vec<_> = SMALL_FRAME_SIZES
@@ -409,6 +427,21 @@ fn small_source() -> Vec<u8> {
     out
 }
 
+fn long_source() -> Vec<u8> {
+    let mut out: Vec<u8> = CORPUS_FILES
+        .iter()
+        .flat_map(|file| read_corpus_file(file))
+        .collect();
+    let corpus_len = out.len();
+    let mut rng = Rng::with_seed(0x1234_5678_9ABC_DEF0);
+    while out.len() < corpus_len + LONG_COPIED {
+        let len = rng.usize(LONG_PIECE);
+        let start = rng.usize(..corpus_len - len);
+        out.extend_from_within(start..start + len);
+    }
+    out
+}
+
 fn content_hash(data: &[u8]) -> u64 {
     data.chunks(8).fold(0xCBF2_9CE4_8422_2325, |hash, chunk| {
         let mut word = [0u8; 8];
@@ -417,16 +450,16 @@ fn content_hash(data: &[u8]) -> u64 {
     })
 }
 
-fn compress_cached(file: &str, data: &[u8], hash: u64, level: i32) -> Vec<u8> {
+fn compress_cached(name: &str, data: &[u8], hash: u64, params: &Params) -> Vec<u8> {
     let dir = std::env::var_os("ZSTD_BENCH_CACHE").map_or_else(
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/bench-cache"),
         PathBuf::from,
     );
-    let path = dir.join(format!("{file}-l{level}-{hash:016x}.zst"));
+    let path = dir.join(format!("{name}-{hash:016x}.zst"));
     if let Ok(frame) = fs::read(&path) {
         return frame;
     }
-    let frame = compress(data, &Params::level(level));
+    let frame = compress(data, params);
     if fs::create_dir_all(&dir)
         .and_then(|()| fs::write(&path, &frame))
         .is_err()

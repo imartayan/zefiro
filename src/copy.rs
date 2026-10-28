@@ -10,7 +10,7 @@ pub(crate) const WILDCOPY_OVERLENGTH: usize = 32;
 const CHUNK: usize = 16;
 
 // The operations a wider instruction set would change.
-pub(crate) trait Kernel: Copy {
+pub(crate) trait Kernel: Copy + Default {
     // Copies `len` bytes in chunks. Safety: readable and writable slack, and
     // the ranges are `CHUNK` bytes apart or disjoint.
     unsafe fn wildcopy(self, dst: *mut u8, src: *const u8, len: usize);
@@ -22,7 +22,7 @@ pub(crate) trait Kernel: Copy {
 }
 
 // 16-byte chunks, as vector loads and stores on the targets that have them.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Portable;
 
 impl Kernel for Portable {
@@ -77,7 +77,7 @@ impl Kernel for Portable {
 // Match copies without a branch on the offset, for blocks whose short offsets
 // make the tests of `Portable::copy_match` unpredictable: the first 16 bytes
 // take the same straight line at every offset, the rest 8 bytes at a time.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ShortOffsets;
 
 impl Kernel for ShortOffsets {

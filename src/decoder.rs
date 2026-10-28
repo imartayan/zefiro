@@ -156,9 +156,15 @@ impl Decoder {
             return Err(Error::DstSizeTooSmall);
         }
         let end = start + block_output_limit(capacity, &literals, block_size_max);
-        let block_end =
-            self.sequences
-                .execute_block(nb_seq, stream, &literals, output, start..end)?;
+        let total_history = start + capacity.min(block_size_max);
+        let block_end = self.sequences.execute_block(
+            nb_seq,
+            stream,
+            &literals,
+            output,
+            start..end,
+            total_history,
+        )?;
         Ok(block_end - start)
     }
 }

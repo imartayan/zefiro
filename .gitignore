@@ -4,6 +4,7 @@ Cargo.lock
 corpus
 fuzz/artifacts
 fuzz/coverage
+fuzz/*.log
 proptest-regressions
 
 ref

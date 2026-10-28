@@ -9,6 +9,8 @@
 use alloc::boxed::Box;
 use core::ops::Range;
 
+use branches::prefetch_read_data;
+
 use crate::bits::{BitReader, Status};
 use crate::copy::{Kernel, Portable, ShortOffsets, WILDCOPY_OVERLENGTH, copy16};
 use crate::error::Error;
@@ -30,6 +32,15 @@ const ML_CELLS: usize = 512;
 // Share of short offsets (out of 256) from which a block's matches are copied without
 // branching on the offset.
 const SHORT_OFFSET_SHARE_MIN: usize = 32;
+
+// libzstd runs the prefetching loop for blocks of more than `LOOKAHEAD` sequences, after
+// over `PREFETCH_HISTORY_MIN` bytes of history, with at least `LONG_OFFSET_SHARE_MIN` cells
+// (out of 256) of the offset table having over `LONG_OFFSET_BITS` extra bits.
+const LOOKAHEAD: usize = 8;
+const PREFETCH_HISTORY_MIN: usize = 1 << 24;
+const LONG_OFFSET_BITS: u8 = 22;
+const LONG_OFFSET_SHARE_MIN: usize = 7;
+const CACHE_LINE: usize = 64;
 
 const MODE_PREDEFINED: u8 = 0;
 const MODE_RLE: u8 = 1;
@@ -56,7 +67,7 @@ struct Tables {
     short_offsets: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct Sequence {
     literal_length: usize,
     match_length: usize,
@@ -193,8 +204,8 @@ impl SequencesState {
     }
 
     // Decodes and executes the block's sequences from `stream`, then copies the remaining
-    // literals. The block starts at `range.start` in the frame's output `out`.
-    // Returns the position after it.
+    // literals. The block starts at `range.start` in the frame's output `out`;
+    // `total_history` is libzstd's `totalHistorySize`. Returns the position after it.
     pub(crate) fn execute_block(
         &mut self,
         nb_seq: usize,
@@ -202,15 +213,27 @@ impl SequencesState {
         literals: &Literals<'_>,
         out: &mut [u8],
         range: Range<usize>,
+        total_history: usize,
     ) -> Result<usize, Error> {
         let literal_bytes = literals.bytes();
         let (mut op, mut literal_pos) = (range.start, 0);
         if nb_seq > 0 {
             self.has_tables = true;
-            (op, literal_pos, self.repeat_offsets) = if self.tables.short_offsets {
-                self.run_sequences(ShortOffsets, nb_seq, stream, literals, out, range.clone())?
+            let prefetch = nb_seq > LOOKAHEAD
+                && total_history > PREFETCH_HISTORY_MIN
+                && long_offset_share(&self.tables.of) >= LONG_OFFSET_SHARE_MIN;
+            (op, literal_pos, self.repeat_offsets) = if prefetch {
+                self.run_sequences::<Portable, true>(nb_seq, stream, literals, out, range.clone())?
+            } else if self.tables.short_offsets {
+                self.run_sequences::<ShortOffsets, false>(
+                    nb_seq,
+                    stream,
+                    literals,
+                    out,
+                    range.clone(),
+                )?
             } else {
-                self.run_sequences(Portable, nb_seq, stream, literals, out, range.clone())?
+                self.run_sequences::<Portable, false>(nb_seq, stream, literals, out, range.clone())?
             };
         }
         let last_literals = &literal_bytes[literal_pos..];
@@ -221,12 +244,13 @@ impl SequencesState {
         Ok(op + last_literals.len())
     }
 
-    // The block's sequence loop: decodes one sequence ahead of the one executed.
+    // The block's sequence loop: decodes one sequence ahead of the one executed, or with
+    // `PREFETCH` `LOOKAHEAD` ahead (`ZSTD_decompressSequencesLong`), touching the match
+    // sources and checking the stream end before the last ones run.
     // Returns the output and literals positions and the repeat offsets after it.
     #[inline(never)]
-    fn run_sequences<K: Kernel>(
+    fn run_sequences<K: Kernel, const PREFETCH: bool>(
         &self,
-        kernel: K,
         nb_seq: usize,
         stream: &[u8],
         literals: &Literals<'_>,
@@ -251,17 +275,45 @@ impl SequencesState {
             op: limits.out_base.wrapping_add(range.start),
             lit: limits.lit_base,
         };
-        let mut current = decoder.next(nb_seq == 1);
-        for remaining in (1..nb_seq).rev() {
-            let following = decoder.next(remaining == 1);
-            // SAFETY: `limits` and `cursor` describe `out` and `literals`, as `exec_sequence` needs.
+        let kernel = K::default();
+        if PREFETCH {
+            let mut queue = [Sequence::default(); LOOKAHEAD];
+            let mut position = range.start;
+            let ahead = nb_seq.min(LOOKAHEAD);
+            for (index, slot) in queue.iter_mut().enumerate().take(ahead) {
+                let sequence = decoder.next(index == nb_seq - 1);
+                position = prefetch_match(position, sequence, &limits);
+                *slot = sequence;
+            }
+            for index in ahead..nb_seq {
+                let sequence = decoder.next(index == nb_seq - 1);
+                let oldest = queue[index % LOOKAHEAD];
+                // SAFETY: `limits` and `cursor` describe `out` and `literals`, as `exec_sequence` needs.
+                cursor = unsafe { exec_sequence(kernel, oldest, cursor, &limits) }?;
+                position = prefetch_match(position, sequence, &limits);
+                queue[index % LOOKAHEAD] = sequence;
+            }
+            if !decoder.bits.end_of_stream() {
+                return Err(Error::CorruptionDetected);
+            }
+            for index in nb_seq - ahead..nb_seq {
+                // SAFETY: as above.
+                cursor =
+                    unsafe { exec_sequence(kernel, queue[index % LOOKAHEAD], cursor, &limits) }?;
+            }
+        } else {
+            let mut current = decoder.next(nb_seq == 1);
+            for remaining in (1..nb_seq).rev() {
+                let following = decoder.next(remaining == 1);
+                // SAFETY: `limits` and `cursor` describe `out` and `literals`, as `exec_sequence` needs.
+                cursor = unsafe { exec_sequence(kernel, current, cursor, &limits) }?;
+                current = following;
+            }
+            // SAFETY: as above.
             cursor = unsafe { exec_sequence(kernel, current, cursor, &limits) }?;
-            current = following;
-        }
-        // SAFETY: as above.
-        cursor = unsafe { exec_sequence(kernel, current, cursor, &limits) }?;
-        if !decoder.bits.end_of_stream() {
-            return Err(Error::CorruptionDetected);
+            if !decoder.bits.end_of_stream() {
+                return Err(Error::CorruptionDetected);
+            }
         }
         let op = cursor.op.addr() - limits.out_base.addr();
         let literal_pos = cursor.lit.addr() - limits.lit_base.addr();
@@ -390,6 +442,30 @@ struct TableSpec {
     mode: u8,
     max_symbol: u32,
     max_log: u32,
+}
+
+// `ZSTD_getOffsetInfo`: cells of the offset table with over `LONG_OFFSET_BITS` extra bits,
+// scaled to 256 cells.
+fn long_offset_share(table: &FseTable<OF_CELLS>) -> usize {
+    let cells = &table.entries[..1 << table.table_log];
+    let long = cells
+        .iter()
+        .filter(|cell| cell.nb_additional_bits > LONG_OFFSET_BITS)
+        .count();
+    long << (OF_TABLE_LOG_MAX - table.table_log)
+}
+
+// `ZSTD_prefetchMatch`: prefetches the match source of `sequence` (the history is the frame's
+// output, an offset past its start is invalid and skipped). Returns the position after it.
+#[inline(always)]
+fn prefetch_match(position: usize, sequence: Sequence, limits: &Limits<'_>) -> usize {
+    let position = position.wrapping_add(sequence.literal_length);
+    if sequence.offset <= position {
+        let source = limits.out_base.wrapping_add(position - sequence.offset);
+        prefetch_read_data::<u8, 0>(source);
+        prefetch_read_data::<u8, 0>(source.wrapping_add(CACHE_LINE));
+    }
+    position.wrapping_add(sequence.match_length)
 }
 
 // Cells of the offset table with codes 2 to 4 (offsets 1 to 28), scaled to 256 cells.

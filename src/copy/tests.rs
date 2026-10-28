@@ -15,8 +15,14 @@ fn copy_match_repeats_the_pattern_and_stays_in_the_slack() {
 }
 
 fn check_copy_match(kernel: impl Kernel) {
-    for offset in (1..=70).chain([100, 1000]) {
-        for len in 1..=150 {
+    // Miri is about 1000x slower: offsets up to 16 and around multiples of 8, every 7th length.
+    let sampled = |offset: usize| !cfg!(miri) || offset <= 16 || offset % 8 <= 1;
+    let len_stride = if cfg!(miri) { 7 } else { 1 };
+    for offset in (1..=70)
+        .filter(|&offset| sampled(offset))
+        .chain([100, 1000])
+    {
+        for len in (1..=150).step_by(len_stride) {
             let history = offset.max(HISTORY);
             let mut buffer = pattern(history + len + WILDCOPY_OVERLENGTH + 8);
             let mut expected = buffer.clone();

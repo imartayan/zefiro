@@ -210,7 +210,7 @@ fn block_headers() {
     assert_eq!(parse_block_header(&[0, 0]), Err(Error::SrcSizeWrong));
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(any(target_family = "wasm", miri)))]
 mod against_libzstd {
     use zstd_sys::{
         ZSTD_ErrorCode, ZSTD_FrameHeader, ZSTD_FrameType_e, ZSTD_getErrorCode, ZSTD_getFrameHeader,

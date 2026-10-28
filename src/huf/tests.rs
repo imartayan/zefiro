@@ -2,7 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::*;
-use crate::testing::{Rng, TestTree, assert_same};
+use crate::testing::{Rng, TestTree, assert_same, miri_scaled};
 
 // Raw header for the weights 1, 1, 2, 3, 3 (the implied sixth is 3): table log 4.
 const DIRECT_WEIGHTS: [u8; 4] = [0x84, 0x11, 0x23, 0x30];
@@ -112,7 +112,7 @@ fn x2_pairs_agree_with_the_x1_codes() {
 fn round_trips_through_both_tables_with_one_and_four_streams() {
     let mut rng = Rng::with_seed(0x40_0D);
     let (mut fast, mut strict) = (0, 0);
-    for _ in 0..300 {
+    for _ in 0..miri_scaled(300) {
         let max_depth = rng.choice([2, 5, 9, 11, 12]).unwrap();
         let tree = TestTree::random(&mut rng, max_depth);
         let most = rng.choice([10, 300, 5000]).unwrap();
@@ -150,7 +150,10 @@ fn round_trips_through_both_tables_with_one_and_four_streams() {
             }
         }
     }
-    assert!(fast > 100 && strict > 100, "{fast} fast, {strict} strict");
+    assert!(
+        cfg!(miri) || (fast > 100 && strict > 100),
+        "{fast} fast, {strict} strict"
+    );
 }
 
 // Four streams with a junk byte at the start of the last one: bits nobody reads.
@@ -204,7 +207,7 @@ fn fast_path_ignores_unread_bits_of_the_last_stream() {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(any(target_family = "wasm", miri)))]
 mod against_libzstd {
     use core::ffi::{c_int, c_void};
 

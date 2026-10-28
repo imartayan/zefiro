@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use super::*;
-use crate::testing::Rng;
+use crate::testing::{Rng, miri_scaled};
 
 // Cells (next_state, nb_additional_bits, nb_bits, base_value) of libzstd's `*_defaultDTable`.
 const LL_C_TABLE: [(u16, u8, u8, u32); 64] = [
@@ -322,7 +322,7 @@ fn ncount_round_trips_default_and_random_distributions() {
     ];
     let mut cases: Vec<(Vec<i16>, u32)> =
         defaults.iter().map(|&(n, log)| (n.to_vec(), log)).collect();
-    cases.extend((0..3000).map(|_| random_norm(&mut rng)));
+    cases.extend((0..miri_scaled(3000)).map(|_| random_norm(&mut rng)));
     for (norm, table_log) in cases {
         let mut header = write_ncount(&norm, table_log);
         let written = header.len();
@@ -363,7 +363,7 @@ fn ncount_rejects_what_libzstd_rejects() {
 #[test]
 fn built_tables_are_consistent() {
     let mut rng = Rng::with_seed(0x00DD_BA11);
-    for _ in 0..500 {
+    for _ in 0..miri_scaled(500) {
         let (norm, table_log) = random_norm(&mut rng);
         let identity: Vec<u32> = (0..256).collect();
         let mut table = FseTable::<512>::EMPTY;
@@ -402,7 +402,7 @@ fn rle_table_has_one_cell_without_state_bits() {
     );
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(any(target_family = "wasm", miri)))]
 mod against_libzstd {
     use core::ffi::c_void;
 

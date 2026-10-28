@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use super::*;
-use crate::testing::Rng;
+use crate::testing::{Rng, miri_scaled};
 
 // Bits in write order (first written first), then the end mark, packed LSB first.
 fn encode(bits: &[bool]) -> Vec<u8> {
@@ -45,8 +45,10 @@ fn check_reads(bits: &[bool], rng: &mut Rng) {
 #[test]
 fn streams_of_every_size_read_back() {
     let mut rng = Rng::with_seed(0x9E37_79B9_7F4A_7C15);
-    for payload_bits in 0..300 {
-        for _ in 0..4 {
+    // Miri is about 1000x slower: every 7th size, once.
+    let (stride, repeats) = if cfg!(miri) { (7, 1) } else { (1, 4) };
+    for payload_bits in (0..300).step_by(stride) {
+        for _ in 0..repeats {
             check_reads(&random_bits(&mut rng, payload_bits), &mut rng);
         }
     }
@@ -120,7 +122,7 @@ fn reading_past_the_start_returns_what_c_returns() {
 #[test]
 fn read_bits_x3_matches_three_reads_even_past_the_start() {
     let mut rng = Rng::with_seed(7);
-    for _ in 0..2000 {
+    for _ in 0..miri_scaled(2000) {
         let mut stream: Vec<u8> = (0..=rng.usize(..12)).map(|_| rng.u8(..)).collect();
         *stream.last_mut().unwrap() |= 1;
         let widths = [rng.u32(..10), rng.u32(..10), rng.u32(..10)];

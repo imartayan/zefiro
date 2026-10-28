@@ -401,14 +401,14 @@ impl SequencesState {
         assert!(range.start <= range.end && range.end <= out.len());
         assert!(literals.padded.len() >= literals.len + WILDCOPY_OVERLENGTH);
         let mut decoder = SequenceDecoder::new(stream, tables, self.repeat_offsets)?;
+        // One `as_mut_ptr` call: a second one would invalidate the first pointer.
+        let out_base = out.as_mut_ptr();
         let limits = Limits {
-            out_base: out.as_mut_ptr(),
+            out_base,
             out_len: out.len(),
             out_end: range.end,
             ext: place.ext,
-            fast_end: out
-                .as_mut_ptr()
-                .wrapping_add(range.end.saturating_sub(WILDCOPY_OVERLENGTH)),
+            fast_end: out_base.wrapping_add(range.end.saturating_sub(WILDCOPY_OVERLENGTH)),
             literals: literals.bytes(),
             lit_base: literals.padded.as_ptr(),
         };

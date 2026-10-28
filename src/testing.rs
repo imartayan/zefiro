@@ -5,9 +5,18 @@ use alloc::vec::Vec;
 
 pub(crate) use fastrand::Rng;
 
+// Miri runs about 1000x slower: fewer random cases from the same generators.
+pub(crate) const fn miri_scaled(cases: usize) -> usize {
+    if cfg!(miri) {
+        cases.div_ceil(30)
+    } else {
+        cases
+    }
+}
+
 // Bytes with a geometric symbol distribution over a random alphabet, from
 // nearly flat to very skewed, so that trees of every depth appear.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
+#[cfg_attr(any(target_family = "wasm", miri), allow(dead_code))]
 pub(crate) fn skewed_bytes(rng: &mut Rng) -> Vec<u8> {
     let alphabet = rng.choice([2, 3, 5, 8, 16, 16, 40, 100, 256]).unwrap();
     let ratio = [0.5, 0.7, 0.8, 0.9, 0.97, 1.0][rng.usize(..6)];
@@ -170,7 +179,7 @@ impl TestTree {
 }
 
 // Huffman streams made by C libzstd.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(any(target_family = "wasm", miri)))]
 pub(crate) mod c_huf {
     use core::ffi::{c_int, c_void};
 

@@ -61,8 +61,14 @@ fn wrapping_frame() -> (Vec<u8>, Vec<u8>) {
 #[test]
 fn any_chunking_gives_the_data() {
     let (input, data) = wrapping_frame();
-    for in_chunk in [1, 2, 5, 699, 5000] {
-        for out_chunk in [1, 3, 700, 701, 5000] {
+    // Under Miri, 1-byte chunks take thousands of calls per frame.
+    let (in_chunks, out_chunks) = if cfg!(miri) {
+        (&[5, 699][..], &[3, 701][..])
+    } else {
+        (&[1, 2, 5, 699, 5000][..], &[1, 3, 700, 701, 5000][..])
+    };
+    for &in_chunk in in_chunks {
+        for &out_chunk in out_chunks {
             let mut decoder = Decoder::new();
             let (output, calls) = stream(&mut decoder, &input, in_chunk, out_chunk).unwrap();
             assert_eq!(output, data, "in {in_chunk} out {out_chunk}");

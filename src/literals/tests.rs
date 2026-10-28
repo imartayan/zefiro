@@ -2,7 +2,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::*;
-use crate::testing::{Rng, TestTree, assert_same, huffman_section, raw_section, rle_section};
+use crate::testing::{
+    Rng, TestTree, assert_same, huffman_section, miri_scaled, raw_section, rle_section,
+};
 
 const BLOCK_MAX: usize = 128 << 10;
 
@@ -53,7 +55,7 @@ fn huffman_literals_round_trip_in_every_size_format() {
     let mut rng = Rng::with_seed(0xB10C);
     let mut state = LiteralsState::new();
     let (mut formats, mut depths) = ([0; 4], [0; 13]);
-    for _ in 0..600 {
+    for _ in 0..miri_scaled(600) {
         let max_depth = rng.choice([3, 8, 11, 12]).unwrap();
         let tree = TestTree::random(&mut rng, max_depth);
         let size_format = rng.usize(..4) as u8;
@@ -84,9 +86,9 @@ fn huffman_literals_round_trip_in_every_size_format() {
         formats[size_format as usize] += 1;
         depths[tree.depth as usize] += 1;
     }
-    assert!(formats.iter().all(|&n| n > 40), "{formats:?}");
+    assert!(cfg!(miri) || formats.iter().all(|&n| n > 40), "{formats:?}");
     assert!(
-        depths[12] > 5 && depths[11] > 5 && depths[2..8].iter().all(|&n| n > 0),
+        cfg!(miri) || (depths[12] > 5 && depths[11] > 5 && depths[2..8].iter().all(|&n| n > 0)),
         "{depths:?}"
     );
 }
@@ -189,7 +191,7 @@ fn corrupted_streams_are_corruption() {
     let mut rng = Rng::with_seed(123);
     let mut state = LiteralsState::new();
     let mut seen = [0; 2];
-    for _ in 0..300 {
+    for _ in 0..miri_scaled(300) {
         let tree = TestTree::random(&mut rng, 11);
         let data = tree.random_data(&mut rng, 200);
         let mut payload = [tree.header.clone(), tree.encode_four_streams(&data)].concat();
@@ -209,7 +211,7 @@ fn corrupted_streams_are_corruption() {
             }
         }
     }
-    assert!(seen.iter().all(|&n| n > 20), "{seen:?}");
+    assert!(cfg!(miri) || seen.iter().all(|&n| n > 20), "{seen:?}");
 }
 
 #[test]

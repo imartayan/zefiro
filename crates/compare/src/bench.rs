@@ -515,8 +515,9 @@ pub fn markdown(rows: &[Row]) -> String {
     out
 }
 
-/// Aligned table for a terminal: MiB/s of each impl and its ratio to `libzstd`
-/// (green or red outside the noise band), the fastest in bold, geomeans last.
+/// Aligned table for a terminal, one group per mode (one-shot, then `-stream`):
+/// the MiB/s of `ours`, then every other impl of the mode over its `libzstd`
+/// (green or red outside the noise band), geomeans last.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
 pub fn pretty(rows: &[Row], color: bool) -> String {
@@ -528,49 +529,82 @@ pub fn pretty(rows: &[Row], color: bool) -> String {
         }
     };
     let names = impl_names(rows);
-    let baseline = names.iter().position(|&name| name == "libzstd");
-    let case_width = rows.iter().map(|r| r.case.len()).max().unwrap_or(0).max(7);
-    let widths: Vec<_> = names.iter().map(|name| name.len().max(11)).collect();
-    let cell =
-        |out: &mut String, width: usize, speed: Option<f64>, ratio: Option<f64>, bold: bool| {
-            let speed_text = speed.map_or(String::new(), |speed| format!("{speed:.0}"));
-            let ratio_text = ratio.map_or(String::new(), |ratio| format!(" {ratio:.2}x"));
-            let padding = (width + 2).saturating_sub(speed_text.len() + ratio_text.len());
-            out.push_str(&" ".repeat(padding));
-            out.push_str(&paint(&speed_text, if bold { "1" } else { "" }));
-            let ratio_color = match ratio {
-                Some(ratio) if ratio > 1.0 + RATIO_NOISE => "32",
-                Some(ratio) if ratio < 1.0 - RATIO_NOISE => "31",
-                _ => "",
-            };
-            out.push_str(&paint(&ratio_text, ratio_color));
-        };
-
-    let mut out = paint(&format!("{:<case_width$}", "MiB/s"), "1;2");
-    for (name, width) in names.iter().zip(&widths) {
-        out.push_str(&paint(&format!("  {name:>width$}"), "1"));
+    let index = |name: &str| names.iter().position(|&n| n == name);
+    // (mode, header, impl, baseline): a speed column without baseline, else a ratio.
+    let mut columns = Vec::new();
+    for (mode, suffix) in [("one-shot", ""), ("stream", "-stream")] {
+        let baseline = index(&format!("libzstd{suffix}"));
+        let in_mode = names.iter().enumerate().filter(|&(i, name)| {
+            name.ends_with("-stream") != suffix.is_empty() && Some(i) != baseline
+        });
+        for (i, name) in in_mode {
+            let short = name.strip_suffix(suffix).unwrap_or(name);
+            if short == "ours" || baseline.is_none() {
+                columns.push((mode, format!("{short} MiB/s"), i, None));
+            }
+            if baseline.is_some() {
+                columns.push((mode, format!("{short}/libzstd"), i, baseline));
+            }
+        }
     }
-    out.push('\n');
-    let mut log_ratio_sums = vec![0.0; names.len()];
+    let case_width = rows.iter().map(|r| r.case.len()).max().unwrap_or(0).max(7);
+    let widths: Vec<_> = columns.iter().map(|c| c.1.len()).collect();
+    let starts_group = |k: usize| k == 0 || columns[k - 1].0 != columns[k].0;
+    let gap = |k: usize| if k > 0 && starts_group(k) { 4 } else { 2 };
+
+    let mut groups = " ".repeat(case_width);
+    let mut header = paint(&format!("{:<case_width$}", "case"), "1");
+    for (k, (mode, name, _, _)) in columns.iter().enumerate() {
+        let gap = " ".repeat(gap(k));
+        if starts_group(k) {
+            let span = columns[k..].iter().take_while(|c| c.0 == *mode);
+            let span_width = span.map(|c| c.1.len() + 2).sum::<usize>() - 2;
+            groups.push_str(&gap);
+            groups.push_str(&paint(
+                &format!("{:-^span_width$}", format!(" {mode} ")),
+                "1;2",
+            ));
+        }
+        let _ = write!(header, "{gap}{}", paint(name, "1"));
+    }
+    let mut out = format!("{groups}\n{header}\n");
+
+    let mut log_ratio_sums = vec![0.0; columns.len()];
     let mut case_count = 0;
+    let push_cell = |out: &mut String, k: usize, text: String, ratio: Option<f64>| {
+        out.push_str(&" ".repeat(gap(k) + widths[k].saturating_sub(text.len())));
+        let code = match ratio {
+            Some(ratio) if ratio > 1.0 + RATIO_NOISE => "32",
+            Some(ratio) if ratio < 1.0 - RATIO_NOISE => "31",
+            _ => "",
+        };
+        out.push_str(&paint(&text, code));
+    };
     for case in rows.chunk_by(|a, b| a.case == b.case) {
         let speeds: Vec<_> = case.iter().map(Row::mib_per_s).collect();
-        let fastest = (0..speeds.len()).max_by(|&a, &b| speeds[a].total_cmp(&speeds[b]));
         let _ = write!(out, "{:<case_width$}", case[0].case);
-        for (i, (&speed, &width)) in speeds.iter().zip(&widths).enumerate() {
-            let ratio = baseline.filter(|&b| b != i).map(|b| speed / speeds[b]);
-            log_ratio_sums[i] += ratio.map_or(0.0, f64::ln);
-            cell(&mut out, width, Some(speed), ratio, Some(i) == fastest);
+        for (k, &(_, _, i, baseline)) in columns.iter().enumerate() {
+            match baseline {
+                None => push_cell(&mut out, k, format!("{:.0}", speeds[i]), None),
+                Some(b) => {
+                    let ratio = speeds[i] / speeds[b];
+                    log_ratio_sums[k] += ratio.ln();
+                    push_cell(&mut out, k, format!("{ratio:.2}x"), Some(ratio));
+                }
+            }
         }
         out.push('\n');
         case_count += 1;
     }
-    if baseline.is_some() && case_count > 1 {
+    if case_count > 1 {
         out.push_str(&paint(&format!("{:<case_width$}", "geomean"), "1;2"));
-        for (i, &width) in widths.iter().enumerate() {
-            let ratio =
-                (Some(i) != baseline).then(|| (log_ratio_sums[i] / case_count as f64).exp());
-            cell(&mut out, width, None, ratio, false);
+        for (k, column) in columns.iter().enumerate() {
+            if column.3.is_some() {
+                let ratio = (log_ratio_sums[k] / case_count as f64).exp();
+                push_cell(&mut out, k, format!("{ratio:.2}x"), Some(ratio));
+            } else {
+                push_cell(&mut out, k, String::new(), None);
+            }
         }
         out.push('\n');
     }

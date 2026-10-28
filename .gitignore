@@ -1,0 +1,10 @@
+target
+Cargo.lock
+
+corpus
+fuzz/artifacts
+fuzz/coverage
+proptest-regressions
+
+ref
+bench-ref

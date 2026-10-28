@@ -1,0 +1,406 @@
+# name offset length capacity verdict (`ok <size> <fnv1a of output>` or `err <Error>`), libzstd 1.5.7
+text-4096-level-7 0 1483 4096 ok 4096 7cab5677cebd4db9
+text-4096-level-7 0 1483 4196 ok 4096 7cab5677cebd4db9
+text-4096-level-7 0 1483 4095 err DstSizeTooSmall
+text-4096-level1 1483 1088 4096 ok 4096 7cab5677cebd4db9
+text-4096-level1 1483 1088 4196 ok 4096 7cab5677cebd4db9
+text-4096-level1 1483 1088 4095 err DstSizeTooSmall
+text-4096-level3 2571 1026 4096 ok 4096 7cab5677cebd4db9
+text-4096-level3 2571 1026 4196 ok 4096 7cab5677cebd4db9
+text-4096-level3 2571 1026 4095 err DstSizeTooSmall
+text-4096-level19 3597 907 4096 ok 4096 7cab5677cebd4db9
+text-4096-level19 3597 907 4196 ok 4096 7cab5677cebd4db9
+text-4096-level19 3597 907 4095 err DstSizeTooSmall
+mixed-4096-level-7 4504 2649 4096 ok 4096 f012a2af158ad876
+mixed-4096-level-7 4504 2649 4196 ok 4096 f012a2af158ad876
+mixed-4096-level-7 4504 2649 4095 err DstSizeTooSmall
+mixed-4096-level1 7153 1433 4096 ok 4096 f012a2af158ad876
+mixed-4096-level1 7153 1433 4196 ok 4096 f012a2af158ad876
+mixed-4096-level1 7153 1433 4095 err DstSizeTooSmall
+mixed-4096-level3 8586 1439 4096 ok 4096 f012a2af158ad876
+mixed-4096-level3 8586 1439 4196 ok 4096 f012a2af158ad876
+mixed-4096-level3 8586 1439 4095 err DstSizeTooSmall
+mixed-4096-level19 10025 1365 4096 ok 4096 f012a2af158ad876
+mixed-4096-level19 10025 1365 4196 ok 4096 f012a2af158ad876
+mixed-4096-level19 10025 1365 4095 err DstSizeTooSmall
+random-100-level-7 11390 113 100 ok 100 63e9dfd45d7a79cc
+random-100-level-7 11390 113 200 ok 100 63e9dfd45d7a79cc
+random-100-level-7 11390 113 99 err DstSizeTooSmall
+random-100-level1 11503 113 100 ok 100 63e9dfd45d7a79cc
+random-100-level1 11503 113 200 ok 100 63e9dfd45d7a79cc
+random-100-level1 11503 113 99 err DstSizeTooSmall
+random-100-level3 11616 113 100 ok 100 63e9dfd45d7a79cc
+random-100-level3 11616 113 200 ok 100 63e9dfd45d7a79cc
+random-100-level3 11616 113 99 err DstSizeTooSmall
+random-100-level19 11729 113 100 ok 100 63e9dfd45d7a79cc
+random-100-level19 11729 113 200 ok 100 63e9dfd45d7a79cc
+random-100-level19 11729 113 99 err DstSizeTooSmall
+repeat-4096-level-7 11842 29 4096 ok 4096 15a9fd7b219d7325
+repeat-4096-level-7 11842 29 4196 ok 4096 15a9fd7b219d7325
+repeat-4096-level-7 11842 29 4095 err DstSizeTooSmall
+repeat-4096-level1 11871 23 4096 ok 4096 15a9fd7b219d7325
+repeat-4096-level1 11871 23 4196 ok 4096 15a9fd7b219d7325
+repeat-4096-level1 11871 23 4095 err DstSizeTooSmall
+repeat-4096-level3 11894 23 4096 ok 4096 15a9fd7b219d7325
+repeat-4096-level3 11894 23 4196 ok 4096 15a9fd7b219d7325
+repeat-4096-level3 11894 23 4095 err DstSizeTooSmall
+repeat-4096-level19 11917 22 4096 ok 4096 15a9fd7b219d7325
+repeat-4096-level19 11917 22 4196 ok 4096 15a9fd7b219d7325
+repeat-4096-level19 11917 22 4095 err DstSizeTooSmall
+mixed-flushed-blocks 11939 4365 12000 ok 12000 766e3a2c43be770b
+mixed-flushed-blocks 11939 4365 12100 ok 12000 766e3a2c43be770b
+mixed-flushed-blocks 11939 4365 11999 err DstSizeTooSmall
+multi-frame 16304 5469 16096 ok 16096 8b2eb936908279b7
+multi-frame 16304 5469 16196 ok 16096 8b2eb936908279b7
+multi-frame 16304 5469 16095 err DstSizeTooSmall
+decodecorpus-zst-small-z000000 21773 1052 1067 ok 1067 44b83663bf9fd35c
+decodecorpus-zst-small-z000000 21773 1052 1167 ok 1067 44b83663bf9fd35c
+decodecorpus-zst-small-z000000 21773 1052 1066 err DstSizeTooSmall
+decodecorpus-zst-small-z000250 22825 633 1245 ok 1245 3b660e37694a31f3
+decodecorpus-zst-small-z000250 22825 633 1345 ok 1245 3b660e37694a31f3
+decodecorpus-zst-small-z000250 22825 633 1244 err DstSizeTooSmall
+decodecorpus-zst-small-z000500 23458 138 334 ok 334 557b4e0fe46d53e8
+decodecorpus-zst-small-z000500 23458 138 434 ok 334 557b4e0fe46d53e8
+decodecorpus-zst-small-z000500 23458 138 333 err DstSizeTooSmall
+decodecorpus-zst-small-z000750 23596 1023 1111 ok 1111 c2cec58e031eb261
+decodecorpus-zst-small-z000750 23596 1023 1211 ok 1111 c2cec58e031eb261
+decodecorpus-zst-small-z000750 23596 1023 1110 err DstSizeTooSmall
+decodecorpus-zst-small-z001000 24619 70 56 ok 56 2fffcb8addcc57ea
+decodecorpus-zst-small-z001000 24619 70 156 ok 56 2fffcb8addcc57ea
+decodecorpus-zst-small-z001000 24619 70 55 err DstSizeTooSmall
+decodecorpus-zst-small-z001250 24689 246 500 ok 500 eb1676f09fb93681
+decodecorpus-zst-small-z001250 24689 246 600 ok 500 eb1676f09fb93681
+decodecorpus-zst-small-z001250 24689 246 499 err DstSizeTooSmall
+decodecorpus-zst-bs8-z000132 24935 2020 3625 ok 3625 7c54a8df0a95716a
+decodecorpus-zst-bs8-z000132 24935 2020 3725 ok 3625 7c54a8df0a95716a
+decodecorpus-zst-bs8-z000132 24935 2020 3624 err DstSizeTooSmall
+decodecorpus-zst-bs8-z000198 26955 227 394 ok 394 f7b409834f3cea5c
+decodecorpus-zst-bs8-z000198 26955 227 494 ok 394 f7b409834f3cea5c
+decodecorpus-zst-bs8-z000198 26955 227 393 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000000 27182 382 507 ok 507 645e038e5dedd354
+decodecorpus-zst-bs12-z000000 27182 382 607 ok 507 645e038e5dedd354
+decodecorpus-zst-bs12-z000000 27182 382 506 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066 27564 4452 12376 ok 12376 60523839c08952b5
+decodecorpus-zst-bs12-z000066 27564 4452 12476 ok 12376 60523839c08952b5
+decodecorpus-zst-bs12-z000066 27564 4452 12375 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000198 32016 449 740 ok 740 00dbcd54a3542f11
+decodecorpus-zst-bs12-z000198 32016 449 840 ok 740 00dbcd54a3542f11
+decodecorpus-zst-bs12-z000198 32016 449 739 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000264 32465 216 313 ok 313 73518cd6a927e021
+decodecorpus-zst-bs12-z000264 32465 216 413 ok 313 73518cd6a927e021
+decodecorpus-zst-bs12-z000264 32465 216 312 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000330 32681 210 419 ok 419 148fddc9e8797e4a
+decodecorpus-zst-bs12-z000330 32681 210 519 ok 419 148fddc9e8797e4a
+decodecorpus-zst-bs12-z000330 32681 210 418 err DstSizeTooSmall
+decodecorpus-zst-z000000 32891 198 507 ok 507 9a7445e5d13acbdc
+decodecorpus-zst-z000000 32891 198 607 ok 507 9a7445e5d13acbdc
+decodecorpus-zst-z000000 32891 198 506 err DstSizeTooSmall
+decodecorpus-zst-z000166 33089 36 15 ok 15 ade9405ce282758c
+decodecorpus-zst-z000166 33089 36 115 ok 15 ade9405ce282758c
+decodecorpus-zst-z000166 33089 36 14 err DstSizeTooSmall
+decodecorpus-zst-z000498 33125 84 87 ok 87 63df0f33c0d8a6a9
+decodecorpus-zst-z000498 33125 84 187 ok 87 63df0f33c0d8a6a9
+decodecorpus-zst-z000498 33125 84 86 err DstSizeTooSmall
+decodecorpus-zst-z000664 33209 39 1 ok 1 af63f54c86021707
+decodecorpus-zst-z000664 33209 39 101 ok 1 af63f54c86021707
+decodecorpus-zst-z000664 33209 39 0 err DstSizeTooSmall
+text-4096-level3-truncated 33248 684 4096 err SrcSizeWrong
+text-4096-level3-truncated 33248 684 4196 err SrcSizeWrong
+text-4096-level3-truncated 33248 684 4095 err SrcSizeWrong
+text-4096-level3-flip0 33932 1026 4096 err CorruptionDetected
+text-4096-level3-flip0 33932 1026 4196 err CorruptionDetected
+text-4096-level3-flip0 33932 1026 4095 err CorruptionDetected
+text-4096-level3-flip1 34958 1026 4096 err ChecksumWrong
+text-4096-level3-flip1 34958 1026 4196 err ChecksumWrong
+text-4096-level3-flip1 34958 1026 4095 err DstSizeTooSmall
+text-4096-level3-flip2 35984 1026 4096 err CorruptionDetected
+text-4096-level3-flip2 35984 1026 4196 err CorruptionDetected
+text-4096-level3-flip2 35984 1026 4095 err CorruptionDetected
+text-4096-level19-truncated 37010 604 4096 err SrcSizeWrong
+text-4096-level19-truncated 37010 604 4196 err SrcSizeWrong
+text-4096-level19-truncated 37010 604 4095 err SrcSizeWrong
+text-4096-level19-flip0 37614 907 4096 err CorruptionDetected
+text-4096-level19-flip0 37614 907 4196 err CorruptionDetected
+text-4096-level19-flip0 37614 907 4095 err CorruptionDetected
+text-4096-level19-flip1 38521 907 4096 err ChecksumWrong
+text-4096-level19-flip1 38521 907 4196 err ChecksumWrong
+text-4096-level19-flip1 38521 907 4095 err DstSizeTooSmall
+text-4096-level19-flip2 39428 907 4096 err ChecksumWrong
+text-4096-level19-flip2 39428 907 4196 err ChecksumWrong
+text-4096-level19-flip2 39428 907 4095 err DstSizeTooSmall
+mixed-4096-level3-truncated 40335 959 4096 err SrcSizeWrong
+mixed-4096-level3-truncated 40335 959 4196 err SrcSizeWrong
+mixed-4096-level3-truncated 40335 959 4095 err SrcSizeWrong
+mixed-4096-level3-flip0 41294 1439 4096 err ChecksumWrong
+mixed-4096-level3-flip0 41294 1439 4196 err ChecksumWrong
+mixed-4096-level3-flip0 41294 1439 4095 err DstSizeTooSmall
+mixed-4096-level3-flip1 42733 1439 4096 err ChecksumWrong
+mixed-4096-level3-flip1 42733 1439 4196 err ChecksumWrong
+mixed-4096-level3-flip1 42733 1439 4095 err DstSizeTooSmall
+mixed-4096-level3-flip2 44172 1439 4096 err ChecksumWrong
+mixed-4096-level3-flip2 44172 1439 4196 err ChecksumWrong
+mixed-4096-level3-flip2 44172 1439 4095 err DstSizeTooSmall
+mixed-4096-level19-truncated 45611 910 4096 err SrcSizeWrong
+mixed-4096-level19-truncated 45611 910 4196 err SrcSizeWrong
+mixed-4096-level19-truncated 45611 910 4095 err SrcSizeWrong
+mixed-4096-level19-flip0 46521 1365 4096 err CorruptionDetected
+mixed-4096-level19-flip0 46521 1365 4196 err CorruptionDetected
+mixed-4096-level19-flip0 46521 1365 4095 err CorruptionDetected
+mixed-4096-level19-flip1 47886 1365 4096 err ChecksumWrong
+mixed-4096-level19-flip1 47886 1365 4196 err ChecksumWrong
+mixed-4096-level19-flip1 47886 1365 4095 err DstSizeTooSmall
+mixed-4096-level19-flip2 49251 1365 4096 err ChecksumWrong
+mixed-4096-level19-flip2 49251 1365 4196 err ChecksumWrong
+mixed-4096-level19-flip2 49251 1365 4095 err DstSizeTooSmall
+random-100-level3-truncated 50616 75 4096 err SrcSizeWrong
+random-100-level3-truncated 50616 75 4196 err SrcSizeWrong
+random-100-level3-truncated 50616 75 4095 err SrcSizeWrong
+random-100-level3-flip0 50691 113 4096 err ChecksumWrong
+random-100-level3-flip0 50691 113 4196 err ChecksumWrong
+random-100-level3-flip0 50691 113 4095 err ChecksumWrong
+random-100-level3-flip1 50804 113 4096 err ChecksumWrong
+random-100-level3-flip1 50804 113 4196 err ChecksumWrong
+random-100-level3-flip1 50804 113 4095 err ChecksumWrong
+random-100-level3-flip2 50917 113 4096 err ChecksumWrong
+random-100-level3-flip2 50917 113 4196 err ChecksumWrong
+random-100-level3-flip2 50917 113 4095 err ChecksumWrong
+random-100-level19-truncated 51030 75 4096 err SrcSizeWrong
+random-100-level19-truncated 51030 75 4196 err SrcSizeWrong
+random-100-level19-truncated 51030 75 4095 err SrcSizeWrong
+random-100-level19-flip0 51105 113 4096 err ChecksumWrong
+random-100-level19-flip0 51105 113 4196 err ChecksumWrong
+random-100-level19-flip0 51105 113 4095 err ChecksumWrong
+random-100-level19-flip1 51218 113 4096 err ChecksumWrong
+random-100-level19-flip1 51218 113 4196 err ChecksumWrong
+random-100-level19-flip1 51218 113 4095 err ChecksumWrong
+random-100-level19-flip2 51331 113 4096 err ChecksumWrong
+random-100-level19-flip2 51331 113 4196 err ChecksumWrong
+random-100-level19-flip2 51331 113 4095 err ChecksumWrong
+repeat-4096-level3-truncated 51444 15 4096 err SrcSizeWrong
+repeat-4096-level3-truncated 51444 15 4196 err SrcSizeWrong
+repeat-4096-level3-truncated 51444 15 4095 err SrcSizeWrong
+repeat-4096-level3-flip0 51459 23 4096 err SrcSizeWrong
+repeat-4096-level3-flip0 51459 23 4196 err SrcSizeWrong
+repeat-4096-level3-flip0 51459 23 4095 err SrcSizeWrong
+repeat-4096-level3-flip1 51482 23 4096 err DstSizeTooSmall
+repeat-4096-level3-flip1 51482 23 4196 err DstSizeTooSmall
+repeat-4096-level3-flip1 51482 23 4095 err DstSizeTooSmall
+repeat-4096-level3-flip2 51505 23 4096 err DstSizeTooSmall
+repeat-4096-level3-flip2 51505 23 4196 err CorruptionDetected
+repeat-4096-level3-flip2 51505 23 4095 err DstSizeTooSmall
+repeat-4096-level19-truncated 51528 14 4096 err SrcSizeWrong
+repeat-4096-level19-truncated 51528 14 4196 err SrcSizeWrong
+repeat-4096-level19-truncated 51528 14 4095 err SrcSizeWrong
+repeat-4096-level19-flip0 51542 22 4096 err SrcSizeWrong
+repeat-4096-level19-flip0 51542 22 4196 err SrcSizeWrong
+repeat-4096-level19-flip0 51542 22 4095 err SrcSizeWrong
+repeat-4096-level19-flip1 51564 22 4096 err PrefixUnknown
+repeat-4096-level19-flip1 51564 22 4196 err PrefixUnknown
+repeat-4096-level19-flip1 51564 22 4095 err PrefixUnknown
+repeat-4096-level19-flip2 51586 22 4096 err CorruptionDetected
+repeat-4096-level19-flip2 51586 22 4196 err CorruptionDetected
+repeat-4096-level19-flip2 51586 22 4095 err CorruptionDetected
+decodecorpus-zst-small-z000000-truncated 51608 701 4096 err SrcSizeWrong
+decodecorpus-zst-small-z000000-truncated 51608 701 4196 err SrcSizeWrong
+decodecorpus-zst-small-z000000-truncated 51608 701 4095 err SrcSizeWrong
+decodecorpus-zst-small-z000000-flip0 52309 1052 4096 err ChecksumWrong
+decodecorpus-zst-small-z000000-flip0 52309 1052 4196 err ChecksumWrong
+decodecorpus-zst-small-z000000-flip0 52309 1052 4095 err ChecksumWrong
+decodecorpus-zst-small-z000000-flip1 53361 1052 4096 err ChecksumWrong
+decodecorpus-zst-small-z000000-flip1 53361 1052 4196 err ChecksumWrong
+decodecorpus-zst-small-z000000-flip1 53361 1052 4095 err ChecksumWrong
+decodecorpus-zst-small-z000000-flip2 54413 1052 4096 err ChecksumWrong
+decodecorpus-zst-small-z000000-flip2 54413 1052 4196 err ChecksumWrong
+decodecorpus-zst-small-z000000-flip2 54413 1052 4095 err ChecksumWrong
+decodecorpus-zst-small-z000250-truncated 55465 422 4096 err SrcSizeWrong
+decodecorpus-zst-small-z000250-truncated 55465 422 4196 err SrcSizeWrong
+decodecorpus-zst-small-z000250-truncated 55465 422 4095 err SrcSizeWrong
+decodecorpus-zst-small-z000250-flip0 55887 633 4096 err CorruptionDetected
+decodecorpus-zst-small-z000250-flip0 55887 633 4196 err CorruptionDetected
+decodecorpus-zst-small-z000250-flip0 55887 633 4095 err CorruptionDetected
+decodecorpus-zst-small-z000250-flip1 56520 633 4096 err ChecksumWrong
+decodecorpus-zst-small-z000250-flip1 56520 633 4196 err ChecksumWrong
+decodecorpus-zst-small-z000250-flip1 56520 633 4095 err ChecksumWrong
+decodecorpus-zst-small-z000250-flip2 57153 633 4096 err ChecksumWrong
+decodecorpus-zst-small-z000250-flip2 57153 633 4196 err ChecksumWrong
+decodecorpus-zst-small-z000250-flip2 57153 633 4095 err ChecksumWrong
+decodecorpus-zst-small-z000500-truncated 57786 92 4096 err SrcSizeWrong
+decodecorpus-zst-small-z000500-truncated 57786 92 4196 err SrcSizeWrong
+decodecorpus-zst-small-z000500-truncated 57786 92 4095 err SrcSizeWrong
+decodecorpus-zst-small-z000500-flip0 57878 138 4096 err CorruptionDetected
+decodecorpus-zst-small-z000500-flip0 57878 138 4196 err CorruptionDetected
+decodecorpus-zst-small-z000500-flip0 57878 138 4095 err CorruptionDetected
+decodecorpus-zst-small-z000500-flip1 58016 138 334 ok 334 557b4e0fe46d53e8
+decodecorpus-zst-small-z000500-flip1 58016 138 434 ok 334 557b4e0fe46d53e8
+decodecorpus-zst-small-z000500-flip1 58016 138 333 err DstSizeTooSmall
+decodecorpus-zst-small-z000500-flip2 58154 138 4096 err ChecksumWrong
+decodecorpus-zst-small-z000500-flip2 58154 138 4196 err ChecksumWrong
+decodecorpus-zst-small-z000500-flip2 58154 138 4095 err ChecksumWrong
+decodecorpus-zst-small-z000750-truncated 58292 682 4096 err SrcSizeWrong
+decodecorpus-zst-small-z000750-truncated 58292 682 4196 err SrcSizeWrong
+decodecorpus-zst-small-z000750-truncated 58292 682 4095 err SrcSizeWrong
+decodecorpus-zst-small-z000750-flip0 58974 1023 4096 err ChecksumWrong
+decodecorpus-zst-small-z000750-flip0 58974 1023 4196 err ChecksumWrong
+decodecorpus-zst-small-z000750-flip0 58974 1023 4095 err ChecksumWrong
+decodecorpus-zst-small-z000750-flip1 59997 1023 4096 err ChecksumWrong
+decodecorpus-zst-small-z000750-flip1 59997 1023 4196 err ChecksumWrong
+decodecorpus-zst-small-z000750-flip1 59997 1023 4095 err ChecksumWrong
+decodecorpus-zst-small-z000750-flip2 61020 1023 4096 err SrcSizeWrong
+decodecorpus-zst-small-z000750-flip2 61020 1023 4196 err SrcSizeWrong
+decodecorpus-zst-small-z000750-flip2 61020 1023 4095 err SrcSizeWrong
+decodecorpus-zst-small-z001000-truncated 62043 46 4096 err SrcSizeWrong
+decodecorpus-zst-small-z001000-truncated 62043 46 4196 err SrcSizeWrong
+decodecorpus-zst-small-z001000-truncated 62043 46 4095 err SrcSizeWrong
+decodecorpus-zst-small-z001000-flip0 62089 70 4096 err SrcSizeWrong
+decodecorpus-zst-small-z001000-flip0 62089 70 4196 err SrcSizeWrong
+decodecorpus-zst-small-z001000-flip0 62089 70 4095 err SrcSizeWrong
+decodecorpus-zst-small-z001000-flip1 62159 70 4096 err CorruptionDetected
+decodecorpus-zst-small-z001000-flip1 62159 70 4196 err CorruptionDetected
+decodecorpus-zst-small-z001000-flip1 62159 70 4095 err CorruptionDetected
+decodecorpus-zst-small-z001000-flip2 62229 70 4096 err PrefixUnknown
+decodecorpus-zst-small-z001000-flip2 62229 70 4196 err PrefixUnknown
+decodecorpus-zst-small-z001000-flip2 62229 70 4095 err PrefixUnknown
+decodecorpus-zst-small-z001250-truncated 62299 164 4096 err SrcSizeWrong
+decodecorpus-zst-small-z001250-truncated 62299 164 4196 err SrcSizeWrong
+decodecorpus-zst-small-z001250-truncated 62299 164 4095 err SrcSizeWrong
+decodecorpus-zst-small-z001250-flip0 62463 246 4096 err CorruptionDetected
+decodecorpus-zst-small-z001250-flip0 62463 246 4196 err CorruptionDetected
+decodecorpus-zst-small-z001250-flip0 62463 246 4095 err CorruptionDetected
+decodecorpus-zst-small-z001250-flip1 62709 246 500 ok 500 eb1676f09fb93681
+decodecorpus-zst-small-z001250-flip1 62709 246 600 ok 500 eb1676f09fb93681
+decodecorpus-zst-small-z001250-flip1 62709 246 499 err DstSizeTooSmall
+decodecorpus-zst-small-z001250-flip2 62955 246 4096 err ChecksumWrong
+decodecorpus-zst-small-z001250-flip2 62955 246 4196 err ChecksumWrong
+decodecorpus-zst-small-z001250-flip2 62955 246 4095 err ChecksumWrong
+decodecorpus-zst-bs8-z000132-truncated 63201 1346 4096 err SrcSizeWrong
+decodecorpus-zst-bs8-z000132-truncated 63201 1346 4196 err SrcSizeWrong
+decodecorpus-zst-bs8-z000132-truncated 63201 1346 4095 err SrcSizeWrong
+decodecorpus-zst-bs8-z000132-flip0 64547 2020 4096 err CorruptionDetected
+decodecorpus-zst-bs8-z000132-flip0 64547 2020 4196 err CorruptionDetected
+decodecorpus-zst-bs8-z000132-flip0 64547 2020 4095 err CorruptionDetected
+decodecorpus-zst-bs8-z000132-flip1 66567 2020 4096 err ChecksumWrong
+decodecorpus-zst-bs8-z000132-flip1 66567 2020 4196 err ChecksumWrong
+decodecorpus-zst-bs8-z000132-flip1 66567 2020 4095 err ChecksumWrong
+decodecorpus-zst-bs8-z000132-flip2 68587 2020 4096 err CorruptionDetected
+decodecorpus-zst-bs8-z000132-flip2 68587 2020 4196 err CorruptionDetected
+decodecorpus-zst-bs8-z000132-flip2 68587 2020 4095 err CorruptionDetected
+decodecorpus-zst-bs8-z000198-truncated 70607 151 4096 err SrcSizeWrong
+decodecorpus-zst-bs8-z000198-truncated 70607 151 4196 err SrcSizeWrong
+decodecorpus-zst-bs8-z000198-truncated 70607 151 4095 err SrcSizeWrong
+decodecorpus-zst-bs8-z000198-flip0 70758 227 4096 err DstSizeTooSmall
+decodecorpus-zst-bs8-z000198-flip0 70758 227 4196 err DstSizeTooSmall
+decodecorpus-zst-bs8-z000198-flip0 70758 227 4095 err DstSizeTooSmall
+decodecorpus-zst-bs8-z000198-flip1 70985 227 4096 err ChecksumWrong
+decodecorpus-zst-bs8-z000198-flip1 70985 227 4196 err ChecksumWrong
+decodecorpus-zst-bs8-z000198-flip1 70985 227 4095 err ChecksumWrong
+decodecorpus-zst-bs8-z000198-flip2 71212 227 4096 err ChecksumWrong
+decodecorpus-zst-bs8-z000198-flip2 71212 227 4196 err ChecksumWrong
+decodecorpus-zst-bs8-z000198-flip2 71212 227 4095 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-truncated 71439 254 4096 err SrcSizeWrong
+decodecorpus-zst-bs12-z000000-truncated 71439 254 4196 err SrcSizeWrong
+decodecorpus-zst-bs12-z000000-truncated 71439 254 4095 err SrcSizeWrong
+decodecorpus-zst-bs12-z000000-flip0 71693 382 4096 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-flip0 71693 382 4196 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-flip0 71693 382 4095 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-flip1 72075 382 4096 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-flip1 72075 382 4196 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-flip1 72075 382 4095 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-flip2 72457 382 4096 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-flip2 72457 382 4196 err ChecksumWrong
+decodecorpus-zst-bs12-z000000-flip2 72457 382 4095 err ChecksumWrong
+decodecorpus-zst-bs12-z000066-truncated 72839 2968 4096 err SrcSizeWrong
+decodecorpus-zst-bs12-z000066-truncated 72839 2968 4196 err SrcSizeWrong
+decodecorpus-zst-bs12-z000066-truncated 72839 2968 4095 err SrcSizeWrong
+decodecorpus-zst-bs12-z000066-flip0 75807 4452 4096 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066-flip0 75807 4452 4196 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066-flip0 75807 4452 4095 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066-flip1 80259 4452 4096 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066-flip1 80259 4452 4196 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066-flip1 80259 4452 4095 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066-flip2 84711 4452 4096 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066-flip2 84711 4452 4196 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000066-flip2 84711 4452 4095 err DstSizeTooSmall
+decodecorpus-zst-bs12-z000198-truncated 89163 299 4096 err SrcSizeWrong
+decodecorpus-zst-bs12-z000198-truncated 89163 299 4196 err SrcSizeWrong
+decodecorpus-zst-bs12-z000198-truncated 89163 299 4095 err SrcSizeWrong
+decodecorpus-zst-bs12-z000198-flip0 89462 449 4096 err CorruptionDetected
+decodecorpus-zst-bs12-z000198-flip0 89462 449 4196 err CorruptionDetected
+decodecorpus-zst-bs12-z000198-flip0 89462 449 4095 err CorruptionDetected
+decodecorpus-zst-bs12-z000198-flip1 89911 449 4096 err CorruptionDetected
+decodecorpus-zst-bs12-z000198-flip1 89911 449 4196 err CorruptionDetected
+decodecorpus-zst-bs12-z000198-flip1 89911 449 4095 err CorruptionDetected
+decodecorpus-zst-bs12-z000198-flip2 90360 449 4096 err ChecksumWrong
+decodecorpus-zst-bs12-z000198-flip2 90360 449 4196 err ChecksumWrong
+decodecorpus-zst-bs12-z000198-flip2 90360 449 4095 err ChecksumWrong
+decodecorpus-zst-bs12-z000264-truncated 90809 144 4096 err SrcSizeWrong
+decodecorpus-zst-bs12-z000264-truncated 90809 144 4196 err SrcSizeWrong
+decodecorpus-zst-bs12-z000264-truncated 90809 144 4095 err SrcSizeWrong
+decodecorpus-zst-bs12-z000264-flip0 90953 216 4096 err CorruptionDetected
+decodecorpus-zst-bs12-z000264-flip0 90953 216 4196 err CorruptionDetected
+decodecorpus-zst-bs12-z000264-flip0 90953 216 4095 err CorruptionDetected
+decodecorpus-zst-bs12-z000264-flip1 91169 216 4096 err CorruptionDetected
+decodecorpus-zst-bs12-z000264-flip1 91169 216 4196 err CorruptionDetected
+decodecorpus-zst-bs12-z000264-flip1 91169 216 4095 err CorruptionDetected
+decodecorpus-zst-bs12-z000264-flip2 91385 216 4096 err CorruptionDetected
+decodecorpus-zst-bs12-z000264-flip2 91385 216 4196 err CorruptionDetected
+decodecorpus-zst-bs12-z000264-flip2 91385 216 4095 err CorruptionDetected
+decodecorpus-zst-bs12-z000330-truncated 91601 140 4096 err SrcSizeWrong
+decodecorpus-zst-bs12-z000330-truncated 91601 140 4196 err SrcSizeWrong
+decodecorpus-zst-bs12-z000330-truncated 91601 140 4095 err SrcSizeWrong
+decodecorpus-zst-bs12-z000330-flip0 91741 210 4096 err CorruptionDetected
+decodecorpus-zst-bs12-z000330-flip0 91741 210 4196 err CorruptionDetected
+decodecorpus-zst-bs12-z000330-flip0 91741 210 4095 err CorruptionDetected
+decodecorpus-zst-bs12-z000330-flip1 91951 210 4096 err CorruptionDetected
+decodecorpus-zst-bs12-z000330-flip1 91951 210 4196 err CorruptionDetected
+decodecorpus-zst-bs12-z000330-flip1 91951 210 4095 err CorruptionDetected
+decodecorpus-zst-bs12-z000330-flip2 92161 210 4096 err ChecksumWrong
+decodecorpus-zst-bs12-z000330-flip2 92161 210 4196 err ChecksumWrong
+decodecorpus-zst-bs12-z000330-flip2 92161 210 4095 err ChecksumWrong
+decodecorpus-zst-z000000-truncated 92371 132 4096 err SrcSizeWrong
+decodecorpus-zst-z000000-truncated 92371 132 4196 err SrcSizeWrong
+decodecorpus-zst-z000000-truncated 92371 132 4095 err SrcSizeWrong
+decodecorpus-zst-z000000-flip0 92503 198 4096 err ChecksumWrong
+decodecorpus-zst-z000000-flip0 92503 198 4196 err ChecksumWrong
+decodecorpus-zst-z000000-flip0 92503 198 4095 err ChecksumWrong
+decodecorpus-zst-z000000-flip1 92701 198 4096 err CorruptionDetected
+decodecorpus-zst-z000000-flip1 92701 198 4196 err CorruptionDetected
+decodecorpus-zst-z000000-flip1 92701 198 4095 err CorruptionDetected
+decodecorpus-zst-z000000-flip2 92899 198 4096 err CorruptionDetected
+decodecorpus-zst-z000000-flip2 92899 198 4196 err CorruptionDetected
+decodecorpus-zst-z000000-flip2 92899 198 4095 err CorruptionDetected
+decodecorpus-zst-z000166-truncated 93097 24 4096 err SrcSizeWrong
+decodecorpus-zst-z000166-truncated 93097 24 4196 err SrcSizeWrong
+decodecorpus-zst-z000166-truncated 93097 24 4095 err SrcSizeWrong
+decodecorpus-zst-z000166-flip0 93121 36 4096 err ChecksumWrong
+decodecorpus-zst-z000166-flip0 93121 36 4196 err ChecksumWrong
+decodecorpus-zst-z000166-flip0 93121 36 4095 err ChecksumWrong
+decodecorpus-zst-z000166-flip1 93157 36 4096 err SrcSizeWrong
+decodecorpus-zst-z000166-flip1 93157 36 4196 err SrcSizeWrong
+decodecorpus-zst-z000166-flip1 93157 36 4095 err SrcSizeWrong
+decodecorpus-zst-z000166-flip2 93193 36 4096 err ChecksumWrong
+decodecorpus-zst-z000166-flip2 93193 36 4196 err ChecksumWrong
+decodecorpus-zst-z000166-flip2 93193 36 4095 err ChecksumWrong
+decodecorpus-zst-z000498-truncated 93229 56 4096 err SrcSizeWrong
+decodecorpus-zst-z000498-truncated 93229 56 4196 err SrcSizeWrong
+decodecorpus-zst-z000498-truncated 93229 56 4095 err SrcSizeWrong
+decodecorpus-zst-z000498-flip0 93285 84 4096 err CorruptionDetected
+decodecorpus-zst-z000498-flip0 93285 84 4196 err CorruptionDetected
+decodecorpus-zst-z000498-flip0 93285 84 4095 err CorruptionDetected
+decodecorpus-zst-z000498-flip1 93369 84 4096 err DstSizeTooSmall
+decodecorpus-zst-z000498-flip1 93369 84 4196 err DstSizeTooSmall
+decodecorpus-zst-z000498-flip1 93369 84 4095 err DstSizeTooSmall
+decodecorpus-zst-z000498-flip2 93453 84 4096 err CorruptionDetected
+decodecorpus-zst-z000498-flip2 93453 84 4196 err CorruptionDetected
+decodecorpus-zst-z000498-flip2 93453 84 4095 err CorruptionDetected
+decodecorpus-zst-z000664-truncated 93537 26 4096 err SrcSizeWrong
+decodecorpus-zst-z000664-truncated 93537 26 4196 err SrcSizeWrong
+decodecorpus-zst-z000664-truncated 93537 26 4095 err SrcSizeWrong
+decodecorpus-zst-z000664-flip0 93563 39 4096 err SrcSizeWrong
+decodecorpus-zst-z000664-flip0 93563 39 4196 err SrcSizeWrong
+decodecorpus-zst-z000664-flip0 93563 39 4095 err SrcSizeWrong
+decodecorpus-zst-z000664-flip1 93602 39 4096 err SrcSizeWrong
+decodecorpus-zst-z000664-flip1 93602 39 4196 err SrcSizeWrong
+decodecorpus-zst-z000664-flip1 93602 39 4095 err SrcSizeWrong
+decodecorpus-zst-z000664-flip2 93641 39 4096 err ChecksumWrong
+decodecorpus-zst-z000664-flip2 93641 39 4196 err ChecksumWrong
+decodecorpus-zst-z000664-flip2 93641 39 4095 err ChecksumWrong

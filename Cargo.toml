@@ -1,0 +1,81 @@
+[package]
+name = "rust-zstd-decoder"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+twox-hash = { version = "2.1.5", default-features = false, features = ["xxhash64"] }
+
+# C libzstd as an oracle for internals (not built for wasm).
+[dev-dependencies]
+fastrand = { version = "2.5.0", default-features = false }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+zstd-sys = { version = "2.1.2", default-features = false, features = ["experimental"] }
+
+[features]
+default = ["std"]
+std = []
+
+[lints]
+workspace = true
+
+[workspace]
+resolver = "3"
+members = ["crates/compare"]
+default-members = [".", "crates/compare"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Bit-twiddling code casts between integer widths on purpose.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+module_name_repetitions = "allow"
+inline_always = "allow"
+wildcard_imports = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+large_stack_arrays = "allow"
+doc_markdown = "allow"
+unnecessary_wraps = "allow"
+items_after_statements = "allow"
+enum_glob_use = "allow"
+similar_names = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+undocumented_unsafe_blocks = "warn"
+missing_safety_doc = "warn"
+multiple_unsafe_ops_per_block = "allow"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+# Fair comparison with C libzstd (-O3, one translation unit per file) and with
+# bench-ref, which sets the same profile (PLAN.md section 7).
+[profile.release]
+debug = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+debug = true

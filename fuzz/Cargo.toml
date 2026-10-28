@@ -1,0 +1,36 @@
+[package]
+name = "rust-zstd-decoder-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+compare = { path = "../crates/compare" }
+
+# Keep the fuzz crate out of the main workspace.
+[workspace]
+
+[[bin]]
+name = "decompress"
+path = "fuzz_targets/decompress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "round_trip"
+path = "fuzz_targets/round_trip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mutate"
+path = "fuzz_targets/mutate.rs"
+test = false
+doc = false
+bench = false

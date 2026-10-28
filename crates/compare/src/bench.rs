@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::hint::black_box;
 use std::io::IsTerminal as _;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{fs, process};
@@ -37,7 +37,7 @@ const MIB: f64 = (1 << 20) as f64;
 // Ratios to libzstd within this band are printed without color.
 const RATIO_NOISE: f64 = 0.02;
 const USAGE: &str = "usage: bench [--rounds N] [--case SUBSTRING[,..]] [--impl NAME[,..]] \
-                     [--tsv FILE] [--md] (a colored table on a terminal, TSV otherwise)";
+                     [--file PATH.zst[,..]] [--tsv FILE] [--md] (a colored table on a terminal, TSV otherwise)";
 
 /// A one-shot decompressor under test, owning its context and output buffer.
 pub trait Impl {
@@ -71,6 +71,7 @@ struct Args {
     rounds: usize,
     cases: Vec<String>,
     impls: Vec<String>,
+    files: Vec<PathBuf>,
     tsv: Option<PathBuf>,
     markdown: bool,
 }
@@ -127,6 +128,7 @@ impl Args {
             rounds: DEFAULT_ROUNDS,
             cases: Vec::new(),
             impls: Vec::new(),
+            files: Vec::new(),
             tsv: None,
             markdown: false,
         };
@@ -147,6 +149,7 @@ impl Args {
                 },
                 "--case" => args.cases.extend(list()),
                 "--impl" => args.impls.extend(list()),
+                "--file" => args.files.extend(list().map(PathBuf::from)),
                 "--tsv" => args.tsv = Some(value.into()),
                 _ => usage(&format!("unknown argument {flag}")),
             }
@@ -302,7 +305,14 @@ pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
     }
     impls.retain(|imp| args.impls.is_empty() || args.impls.iter().any(|n| n == imp.name()));
 
-    let rows = run(&cases(&args.cases), &mut impls, args.rounds);
+    // With `--file` only, the built-in cases are skipped.
+    let mut cases = if args.files.is_empty() || !args.cases.is_empty() {
+        cases(&args.cases)
+    } else {
+        Vec::new()
+    };
+    cases.extend(args.files.iter().map(|path| file_case(path)));
+    let rows = run(&cases, &mut impls, args.rounds);
     let tsv = tsv(&rows);
     if let Some(path) = &args.tsv {
         fs::write(path, &tsv).unwrap_or_else(|e| usage(&format!("{}: {e}", path.display())));
@@ -609,6 +619,18 @@ pub fn pretty(rows: &[Row], color: bool) -> String {
         out.push('\n');
     }
     out
+}
+
+// A `.zst` file as one input, its content decoded once by our decoder.
+fn file_case(path: &Path) -> Case {
+    let fail = |e: &dyn std::fmt::Debug| usage(&format!("{}: {e:?}", path.display()));
+    let input = fs::read(path).unwrap_or_else(|e| fail(&e));
+    let content = rust_zstd_decoder::decompress(&input, usize::MAX).unwrap_or_else(|e| fail(&e));
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let range = 0..content.len();
+    Case::new(name, Arc::new(content), vec![(input, range)])
 }
 
 fn time_pass(imp: &mut dyn Impl, case: &Case) -> Duration {

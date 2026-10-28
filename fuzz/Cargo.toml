@@ -41,3 +41,10 @@ path = "fuzz_targets/stream.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dict"
+path = "fuzz_targets/dict.rs"
+test = false
+doc = false
+bench = false

@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 mod bits;
 mod copy;
 mod decoder;
+mod dict;
 mod error;
 mod frame;
 mod fse;
@@ -24,6 +25,7 @@ mod stream;
 mod testing;
 
 pub use decoder::Decoder;
+pub use dict::Dictionary;
 pub use error::Error;
 pub use frame::frame_content_size;
 #[cfg(feature = "std")]

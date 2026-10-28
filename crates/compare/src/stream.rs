@@ -5,7 +5,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
-use rust_zstd_decoder::Decoder;
+use rust_zstd_decoder::{Decoder, Dictionary};
 
 use crate::{Code, Libzstd, Outcome, assert_agree};
 
@@ -75,8 +75,22 @@ pub fn run_stream(
 
 /// A run of our decoder (a fresh one) with the window limit `window_log` (0: default).
 pub fn stream_ours(input: &[u8], in_sizes: &[usize], out_sizes: &[usize], window_log: u32) -> Run {
+    stream_ours_dictionary(&[], input, in_sizes, out_sizes, window_log)
+}
+
+/// [`stream_ours`] with a dictionary (empty: none, else it must be valid).
+pub fn stream_ours_dictionary(
+    dictionary: &[u8],
+    input: &[u8],
+    in_sizes: &[usize],
+    out_sizes: &[usize],
+    window_log: u32,
+) -> Run {
     let mut decoder = Decoder::new();
     decoder.set_window_log_max(window_log);
+    if !dictionary.is_empty() {
+        decoder.set_dictionary(Some(&Dictionary::new(dictionary).unwrap()));
+    }
     let step = |input: &[u8], output: &mut [u8]| {
         let progress = decoder.decompress_stream(input, output)?;
         Ok(Step {
@@ -96,8 +110,20 @@ pub fn stream_theirs(
     out_sizes: &[usize],
     window_log: u32,
 ) -> Run {
+    stream_theirs_dictionary(&[], input, in_sizes, out_sizes, window_log)
+}
+
+/// [`stream_theirs`] with a dictionary (`ZSTD_DCtx_loadDictionary`).
+pub fn stream_theirs_dictionary(
+    dictionary: &[u8],
+    input: &[u8],
+    in_sizes: &[usize],
+    out_sizes: &[usize],
+    window_log: u32,
+) -> Run {
     let mut oracle = Libzstd::new();
     oracle.set_window_log_max(window_log);
+    oracle.load_dictionary(dictionary).unwrap();
     run_stream(|i, o| oracle.stream_step(i, o), input, in_sizes, out_sizes)
 }
 
@@ -110,8 +136,20 @@ pub fn compare_stream(
     window_log: u32,
     what: &str,
 ) -> Run {
-    let theirs = stream_theirs(input, in_sizes, out_sizes, window_log);
-    let ours = stream_ours(input, in_sizes, out_sizes, window_log);
+    compare_stream_dictionary(&[], input, in_sizes, out_sizes, window_log, what)
+}
+
+/// [`compare_stream`] with a dictionary.
+pub fn compare_stream_dictionary(
+    dictionary: &[u8],
+    input: &[u8],
+    in_sizes: &[usize],
+    out_sizes: &[usize],
+    window_log: u32,
+    what: &str,
+) -> Run {
+    let theirs = stream_theirs_dictionary(dictionary, input, in_sizes, out_sizes, window_log);
+    let ours = stream_ours_dictionary(dictionary, input, in_sizes, out_sizes, window_log);
     let what = format!("{what}: in {in_sizes:?} out {out_sizes:?} window {window_log}");
     let check = || {
         assert_agree(&ours.outcome, &theirs.outcome, &what);

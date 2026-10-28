@@ -5,6 +5,7 @@
 use alloc::vec::Vec;
 
 use crate::copy::WILDCOPY_OVERLENGTH;
+use crate::dict::Dictionary;
 use crate::error::Error;
 use crate::huf::HufTable;
 
@@ -33,6 +34,9 @@ pub(crate) struct LiteralsState {
     table: alloc::boxed::Box<HufTable>,
     // A Huffman table from this frame can be repeated (libzstd's `litEntropy`).
     has_table: bool,
+    dictionary: Option<Dictionary>,
+    // The table to repeat is the dictionary's, not copied into `table`.
+    in_dictionary: bool,
 }
 
 impl<'a> Literals<'a> {
@@ -47,11 +51,22 @@ impl LiteralsState {
             buffer: Vec::new(),
             table: HufTable::boxed(),
             has_table: false,
+            dictionary: None,
+            in_dictionary: false,
         }
     }
 
+    pub(crate) fn set_dictionary(&mut self, dictionary: Option<&Dictionary>) {
+        self.dictionary = dictionary.cloned();
+    }
+
+    // A frame starts from the dictionary's Huffman table, if it has one.
     pub(crate) fn start_frame(&mut self) {
-        self.has_table = false;
+        self.in_dictionary = self
+            .dictionary
+            .as_ref()
+            .is_some_and(|d| d.entropy().is_some());
+        self.has_table = self.in_dictionary;
     }
 
     // Decodes the section at the start of `src`. `output_capacity` is the room
@@ -171,11 +186,23 @@ impl LiteralsState {
 
         let dst = grow(&mut self.buffer, len);
         let stream = &src[header_size..header_size + compressed_len];
-        let result = match (repeat_table, single_stream) {
-            (true, true) => self.table.decompress_1x(dst, stream),
-            (true, false) => self.table.decompress_4x(dst, stream),
-            (false, true) => self.table.read_and_decompress_1x(dst, stream),
-            (false, false) => self.table.read_and_decompress_4x(dst, stream),
+        let result = if repeat_table {
+            let table = match &self.dictionary {
+                Some(dictionary) if self.in_dictionary => &dictionary.entropy().unwrap().huffman,
+                _ => &self.table,
+            };
+            if single_stream {
+                table.decompress_1x(dst, stream)
+            } else {
+                table.decompress_4x(dst, stream)
+            }
+        } else {
+            self.in_dictionary = false;
+            if single_stream {
+                self.table.read_and_decompress_1x(dst, stream)
+            } else {
+                self.table.read_and_decompress_4x(dst, stream)
+            }
         };
         result.map_err(|_| Error::CorruptionDetected)?;
         self.has_table = true;

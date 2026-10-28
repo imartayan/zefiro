@@ -1,0 +1,479 @@
+# dict <name> <offset> <length> <ok|err Code>: libzstd 1.5.7 loading it
+# frame <dictionary> <payload> <offset> <length> <capacity> <verdict>: decoding with it
+dict none 0 0 ok
+dict http 9251 1000 ok
+dict zero-weight 20427 153 ok
+dict invalid-rep-code 30996 160 err DictionaryCorrupted
+dict magic-only 31156 8 err DictionaryCorrupted
+dict trained-2k 31164 2048 ok
+dict trained-16k 73622 16384 ok
+dict raw-1500 129475 1500 ok
+dict raw-3-bytes 171195 3 ok
+frame none none-headers-level1 0 168 558 ok 558 80bb52058c01eac4
+frame none none-headers-level1 0 168 658 ok 558 80bb52058c01eac4
+frame none none-headers-level1 0 168 557 err DstSizeTooSmall
+frame none none-headers-level1 0 168 558 ok 558 80bb52058c01eac4
+frame none none-headers-level1 0 168 658 ok 558 80bb52058c01eac4
+frame none none-headers-level1 0 168 557 err DstSizeTooSmall
+frame none none-headers-level3 168 172 558 ok 558 80bb52058c01eac4
+frame none none-headers-level3 168 172 658 ok 558 80bb52058c01eac4
+frame none none-headers-level3 168 172 557 err DstSizeTooSmall
+frame http none-headers-level3 168 172 558 ok 558 80bb52058c01eac4
+frame http none-headers-level3 168 172 658 ok 558 80bb52058c01eac4
+frame http none-headers-level3 168 172 557 err DstSizeTooSmall
+frame none none-headers-level19 340 164 558 ok 558 80bb52058c01eac4
+frame none none-headers-level19 340 164 658 ok 558 80bb52058c01eac4
+frame none none-headers-level19 340 164 557 err DstSizeTooSmall
+frame zero-weight none-headers-level19 340 164 558 ok 558 80bb52058c01eac4
+frame zero-weight none-headers-level19 340 164 658 ok 558 80bb52058c01eac4
+frame zero-weight none-headers-level19 340 164 557 err DstSizeTooSmall
+frame none none-headers-level-5 504 205 558 ok 558 80bb52058c01eac4
+frame none none-headers-level-5 504 205 658 ok 558 80bb52058c01eac4
+frame none none-headers-level-5 504 205 557 err DstSizeTooSmall
+frame none none-text-3000-level1 709 838 3000 ok 3000 a0e5576b54eea11f
+frame none none-text-3000-level1 709 838 3100 ok 3000 a0e5576b54eea11f
+frame none none-text-3000-level1 709 838 2999 err DstSizeTooSmall
+frame none none-text-3000-level3 1547 808 3000 ok 3000 a0e5576b54eea11f
+frame none none-text-3000-level3 1547 808 3100 ok 3000 a0e5576b54eea11f
+frame none none-text-3000-level3 1547 808 2999 err DstSizeTooSmall
+frame trained-2k none-text-3000-level3 1547 808 3000 ok 3000 a0e5576b54eea11f
+frame trained-2k none-text-3000-level3 1547 808 3100 ok 3000 a0e5576b54eea11f
+frame trained-2k none-text-3000-level3 1547 808 2999 err DstSizeTooSmall
+frame none none-text-3000-level19 2355 705 3000 ok 3000 a0e5576b54eea11f
+frame none none-text-3000-level19 2355 705 3100 ok 3000 a0e5576b54eea11f
+frame none none-text-3000-level19 2355 705 2999 err DstSizeTooSmall
+frame trained-16k none-text-3000-level19 2355 705 3000 ok 3000 a0e5576b54eea11f
+frame trained-16k none-text-3000-level19 2355 705 3100 ok 3000 a0e5576b54eea11f
+frame trained-16k none-text-3000-level19 2355 705 2999 err DstSizeTooSmall
+frame none none-text-3000-level-5 3060 1095 3000 ok 3000 a0e5576b54eea11f
+frame none none-text-3000-level-5 3060 1095 3100 ok 3000 a0e5576b54eea11f
+frame none none-text-3000-level-5 3060 1095 2999 err DstSizeTooSmall
+frame raw-1500 none-text-3000-level-5 3060 1095 3000 ok 3000 a0e5576b54eea11f
+frame raw-1500 none-text-3000-level-5 3060 1095 3100 ok 3000 a0e5576b54eea11f
+frame raw-1500 none-text-3000-level-5 3060 1095 2999 err DstSizeTooSmall
+frame none none-mixed-3000-level1 4155 1099 3000 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level1 4155 1099 3100 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level1 4155 1099 2999 err DstSizeTooSmall
+frame raw-3-bytes none-mixed-3000-level1 4155 1099 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes none-mixed-3000-level1 4155 1099 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes none-mixed-3000-level1 4155 1099 2999 err DstSizeTooSmall
+frame none none-mixed-3000-level3 5254 1101 3000 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level3 5254 1101 3100 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level3 5254 1101 2999 err DstSizeTooSmall
+frame none none-mixed-3000-level3 5254 1101 3000 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level3 5254 1101 3100 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level3 5254 1101 2999 err DstSizeTooSmall
+frame none none-mixed-3000-level19 6355 1035 3000 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level19 6355 1035 3100 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level19 6355 1035 2999 err DstSizeTooSmall
+frame http none-mixed-3000-level19 6355 1035 3000 ok 3000 5cc089eaa86ef6a6
+frame http none-mixed-3000-level19 6355 1035 3100 ok 3000 5cc089eaa86ef6a6
+frame http none-mixed-3000-level19 6355 1035 2999 err DstSizeTooSmall
+frame none none-mixed-3000-level-5 7390 1861 3000 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level-5 7390 1861 3100 ok 3000 5cc089eaa86ef6a6
+frame none none-mixed-3000-level-5 7390 1861 2999 err DstSizeTooSmall
+frame zero-weight none-mixed-3000-level-5 7390 1861 3000 ok 3000 5cc089eaa86ef6a6
+frame zero-weight none-mixed-3000-level-5 7390 1861 3100 ok 3000 5cc089eaa86ef6a6
+frame zero-weight none-mixed-3000-level-5 7390 1861 2999 err DstSizeTooSmall
+frame http http-headers-level1 10251 185 558 ok 558 80bb52058c01eac4
+frame http http-headers-level1 10251 185 658 ok 558 80bb52058c01eac4
+frame http http-headers-level1 10251 185 557 err DstSizeTooSmall
+frame http http-headers-level3 10436 184 558 ok 558 80bb52058c01eac4
+frame http http-headers-level3 10436 184 658 ok 558 80bb52058c01eac4
+frame http http-headers-level3 10436 184 557 err DstSizeTooSmall
+frame http http-headers-level19 10620 168 558 ok 558 80bb52058c01eac4
+frame http http-headers-level19 10620 168 658 ok 558 80bb52058c01eac4
+frame http http-headers-level19 10620 168 557 err DstSizeTooSmall
+frame trained-2k http-headers-level19 10620 168 558 err DictionaryWrong
+frame trained-2k http-headers-level19 10620 168 658 err DictionaryWrong
+frame trained-2k http-headers-level19 10620 168 557 err DictionaryWrong
+frame http http-headers-level-5 10788 259 558 ok 558 80bb52058c01eac4
+frame http http-headers-level-5 10788 259 658 ok 558 80bb52058c01eac4
+frame http http-headers-level-5 10788 259 557 err DstSizeTooSmall
+frame trained-16k http-headers-level-5 10788 259 558 err DictionaryWrong
+frame trained-16k http-headers-level-5 10788 259 658 err DictionaryWrong
+frame trained-16k http-headers-level-5 10788 259 557 err DictionaryWrong
+frame http http-text-3000-level1 11047 900 3000 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level1 11047 900 3100 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level1 11047 900 2999 err DstSizeTooSmall
+frame raw-1500 http-text-3000-level1 11047 900 3000 err DictionaryWrong
+frame raw-1500 http-text-3000-level1 11047 900 3100 err DictionaryWrong
+frame raw-1500 http-text-3000-level1 11047 900 2999 err DictionaryWrong
+frame http http-text-3000-level3 11947 843 3000 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level3 11947 843 3100 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level3 11947 843 2999 err DstSizeTooSmall
+frame raw-3-bytes http-text-3000-level3 11947 843 3000 err DictionaryCorrupted
+frame raw-3-bytes http-text-3000-level3 11947 843 3100 err DictionaryCorrupted
+frame raw-3-bytes http-text-3000-level3 11947 843 2999 err DictionaryCorrupted
+frame http http-text-3000-level19 12790 713 3000 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level19 12790 713 3100 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level19 12790 713 2999 err DstSizeTooSmall
+frame none http-text-3000-level19 12790 713 3000 err DictionaryWrong
+frame none http-text-3000-level19 12790 713 3100 err DictionaryWrong
+frame none http-text-3000-level19 12790 713 2999 err DictionaryWrong
+frame http http-text-3000-level-5 13503 1377 3000 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level-5 13503 1377 3100 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level-5 13503 1377 2999 err DstSizeTooSmall
+frame http http-text-3000-level-5 13503 1377 3000 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level-5 13503 1377 3100 ok 3000 a0e5576b54eea11f
+frame http http-text-3000-level-5 13503 1377 2999 err DstSizeTooSmall
+frame http http-mixed-3000-level1 14880 1108 3000 ok 3000 5cc089eaa86ef6a6
+frame http http-mixed-3000-level1 14880 1108 3100 ok 3000 5cc089eaa86ef6a6
+frame http http-mixed-3000-level1 14880 1108 2999 err DstSizeTooSmall
+frame zero-weight http-mixed-3000-level1 14880 1108 3000 err DictionaryWrong
+frame zero-weight http-mixed-3000-level1 14880 1108 3100 err DictionaryWrong
+frame zero-weight http-mixed-3000-level1 14880 1108 2999 err DictionaryWrong
+frame http http-mixed-3000-level3 15988 1106 3000 ok 3000 5cc089eaa86ef6a6
+frame http http-mixed-3000-level3 15988 1106 3100 ok 3000 5cc089eaa86ef6a6
+frame http http-mixed-3000-level3 15988 1106 2999 err DstSizeTooSmall
+frame http http-mixed-3000-level19 17094 1039 3000 ok 3000 5cc089eaa86ef6a6
+frame http http-mixed-3000-level19 17094 1039 3100 ok 3000 5cc089eaa86ef6a6
+frame http http-mixed-3000-level19 17094 1039 2999 err DstSizeTooSmall
+frame http http-mixed-3000-level-5 18133 2294 3000 ok 3000 5cc089eaa86ef6a6
+frame http http-mixed-3000-level-5 18133 2294 3100 ok 3000 5cc089eaa86ef6a6
+frame http http-mixed-3000-level-5 18133 2294 2999 err DstSizeTooSmall
+frame trained-2k http-mixed-3000-level-5 18133 2294 3000 err DictionaryWrong
+frame trained-2k http-mixed-3000-level-5 18133 2294 3100 err DictionaryWrong
+frame trained-2k http-mixed-3000-level-5 18133 2294 2999 err DictionaryWrong
+frame zero-weight zero-weight-headers-level1 20580 174 558 ok 558 80bb52058c01eac4
+frame zero-weight zero-weight-headers-level1 20580 174 658 ok 558 80bb52058c01eac4
+frame zero-weight zero-weight-headers-level1 20580 174 557 err DstSizeTooSmall
+frame trained-16k zero-weight-headers-level1 20580 174 558 err DictionaryWrong
+frame trained-16k zero-weight-headers-level1 20580 174 658 err DictionaryWrong
+frame trained-16k zero-weight-headers-level1 20580 174 557 err DictionaryWrong
+frame zero-weight zero-weight-headers-level3 20754 175 558 ok 558 80bb52058c01eac4
+frame zero-weight zero-weight-headers-level3 20754 175 658 ok 558 80bb52058c01eac4
+frame zero-weight zero-weight-headers-level3 20754 175 557 err DstSizeTooSmall
+frame raw-1500 zero-weight-headers-level3 20754 175 558 err CorruptionDetected
+frame raw-1500 zero-weight-headers-level3 20754 175 658 err CorruptionDetected
+frame raw-1500 zero-weight-headers-level3 20754 175 557 err CorruptionDetected
+frame zero-weight zero-weight-headers-level19 20929 167 558 ok 558 80bb52058c01eac4
+frame zero-weight zero-weight-headers-level19 20929 167 658 ok 558 80bb52058c01eac4
+frame zero-weight zero-weight-headers-level19 20929 167 557 err DstSizeTooSmall
+frame raw-3-bytes zero-weight-headers-level19 20929 167 558 err DictionaryWrong
+frame raw-3-bytes zero-weight-headers-level19 20929 167 658 err DictionaryWrong
+frame raw-3-bytes zero-weight-headers-level19 20929 167 557 err DictionaryWrong
+frame zero-weight zero-weight-headers-level-5 21096 261 558 ok 558 80bb52058c01eac4
+frame zero-weight zero-weight-headers-level-5 21096 261 658 ok 558 80bb52058c01eac4
+frame zero-weight zero-weight-headers-level-5 21096 261 557 err DstSizeTooSmall
+frame none zero-weight-headers-level-5 21096 261 558 err DictionaryWrong
+frame none zero-weight-headers-level-5 21096 261 658 err DictionaryWrong
+frame none zero-weight-headers-level-5 21096 261 557 err DictionaryWrong
+frame zero-weight zero-weight-text-3000-level1 21357 952 3000 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level1 21357 952 3100 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level1 21357 952 2999 err DstSizeTooSmall
+frame http zero-weight-text-3000-level1 21357 952 3000 err DictionaryWrong
+frame http zero-weight-text-3000-level1 21357 952 3100 err DictionaryWrong
+frame http zero-weight-text-3000-level1 21357 952 2999 err DictionaryWrong
+frame zero-weight zero-weight-text-3000-level3 22309 863 3000 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level3 22309 863 3100 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level3 22309 863 2999 err DstSizeTooSmall
+frame zero-weight zero-weight-text-3000-level3 22309 863 3000 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level3 22309 863 3100 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level3 22309 863 2999 err DstSizeTooSmall
+frame zero-weight zero-weight-text-3000-level19 23172 719 3000 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level19 23172 719 3100 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level19 23172 719 2999 err DstSizeTooSmall
+frame zero-weight zero-weight-text-3000-level-5 23891 1470 3000 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level-5 23891 1470 3100 ok 3000 a0e5576b54eea11f
+frame zero-weight zero-weight-text-3000-level-5 23891 1470 2999 err DstSizeTooSmall
+frame zero-weight zero-weight-mixed-3000-level1 25361 1138 3000 ok 3000 5cc089eaa86ef6a6
+frame zero-weight zero-weight-mixed-3000-level1 25361 1138 3100 ok 3000 5cc089eaa86ef6a6
+frame zero-weight zero-weight-mixed-3000-level1 25361 1138 2999 err DstSizeTooSmall
+frame trained-2k zero-weight-mixed-3000-level1 25361 1138 3000 err DictionaryWrong
+frame trained-2k zero-weight-mixed-3000-level1 25361 1138 3100 err DictionaryWrong
+frame trained-2k zero-weight-mixed-3000-level1 25361 1138 2999 err DictionaryWrong
+frame zero-weight zero-weight-mixed-3000-level3 26499 1136 3000 ok 3000 5cc089eaa86ef6a6
+frame zero-weight zero-weight-mixed-3000-level3 26499 1136 3100 ok 3000 5cc089eaa86ef6a6
+frame zero-weight zero-weight-mixed-3000-level3 26499 1136 2999 err DstSizeTooSmall
+frame trained-16k zero-weight-mixed-3000-level3 26499 1136 3000 err DstSizeTooSmall
+frame trained-16k zero-weight-mixed-3000-level3 26499 1136 3100 err DstSizeTooSmall
+frame trained-16k zero-weight-mixed-3000-level3 26499 1136 2999 err DstSizeTooSmall
+frame zero-weight zero-weight-mixed-3000-level19 27635 1039 3000 ok 3000 5cc089eaa86ef6a6
+frame zero-weight zero-weight-mixed-3000-level19 27635 1039 3100 ok 3000 5cc089eaa86ef6a6
+frame zero-weight zero-weight-mixed-3000-level19 27635 1039 2999 err DstSizeTooSmall
+frame raw-1500 zero-weight-mixed-3000-level19 27635 1039 3000 err DictionaryWrong
+frame raw-1500 zero-weight-mixed-3000-level19 27635 1039 3100 err DictionaryWrong
+frame raw-1500 zero-weight-mixed-3000-level19 27635 1039 2999 err DictionaryWrong
+frame zero-weight zero-weight-mixed-3000-level-5 28674 2322 3000 ok 3000 5cc089eaa86ef6a6
+frame zero-weight zero-weight-mixed-3000-level-5 28674 2322 3100 ok 3000 5cc089eaa86ef6a6
+frame zero-weight zero-weight-mixed-3000-level-5 28674 2322 2999 err DstSizeTooSmall
+frame raw-3-bytes zero-weight-mixed-3000-level-5 28674 2322 3000 err DictionaryWrong
+frame raw-3-bytes zero-weight-mixed-3000-level-5 28674 2322 3100 err DictionaryWrong
+frame raw-3-bytes zero-weight-mixed-3000-level-5 28674 2322 2999 err DictionaryWrong
+frame trained-2k trained-2k-headers-level1 33212 196 558 ok 558 80bb52058c01eac4
+frame trained-2k trained-2k-headers-level1 33212 196 658 ok 558 80bb52058c01eac4
+frame trained-2k trained-2k-headers-level1 33212 196 557 err DstSizeTooSmall
+frame none trained-2k-headers-level1 33212 196 558 err DictionaryWrong
+frame none trained-2k-headers-level1 33212 196 658 err DictionaryWrong
+frame none trained-2k-headers-level1 33212 196 557 err DictionaryWrong
+frame trained-2k trained-2k-headers-level3 33408 196 558 ok 558 80bb52058c01eac4
+frame trained-2k trained-2k-headers-level3 33408 196 658 ok 558 80bb52058c01eac4
+frame trained-2k trained-2k-headers-level3 33408 196 557 err DstSizeTooSmall
+frame http trained-2k-headers-level3 33408 196 558 err CorruptionDetected
+frame http trained-2k-headers-level3 33408 196 658 err CorruptionDetected
+frame http trained-2k-headers-level3 33408 196 557 err CorruptionDetected
+frame trained-2k trained-2k-headers-level19 33604 171 558 ok 558 80bb52058c01eac4
+frame trained-2k trained-2k-headers-level19 33604 171 658 ok 558 80bb52058c01eac4
+frame trained-2k trained-2k-headers-level19 33604 171 557 err DstSizeTooSmall
+frame zero-weight trained-2k-headers-level19 33604 171 558 err DictionaryWrong
+frame zero-weight trained-2k-headers-level19 33604 171 658 err DictionaryWrong
+frame zero-weight trained-2k-headers-level19 33604 171 557 err DictionaryWrong
+frame trained-2k trained-2k-headers-level-5 33775 261 558 ok 558 80bb52058c01eac4
+frame trained-2k trained-2k-headers-level-5 33775 261 658 ok 558 80bb52058c01eac4
+frame trained-2k trained-2k-headers-level-5 33775 261 557 err DstSizeTooSmall
+frame trained-2k trained-2k-text-3000-level1 34036 844 3000 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level1 34036 844 3100 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level1 34036 844 2999 err DstSizeTooSmall
+frame trained-2k trained-2k-text-3000-level3 34880 685 3000 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level3 34880 685 3100 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level3 34880 685 2999 err DstSizeTooSmall
+frame trained-2k trained-2k-text-3000-level3 34880 685 3000 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level3 34880 685 3100 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level3 34880 685 2999 err DstSizeTooSmall
+frame trained-2k trained-2k-text-3000-level19 35565 578 3000 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level19 35565 578 3100 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level19 35565 578 2999 err DstSizeTooSmall
+frame trained-16k trained-2k-text-3000-level19 35565 578 3000 err DictionaryWrong
+frame trained-16k trained-2k-text-3000-level19 35565 578 3100 err DictionaryWrong
+frame trained-16k trained-2k-text-3000-level19 35565 578 2999 err DictionaryWrong
+frame trained-2k trained-2k-text-3000-level-5 36143 911 3000 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level-5 36143 911 3100 ok 3000 a0e5576b54eea11f
+frame trained-2k trained-2k-text-3000-level-5 36143 911 2999 err DstSizeTooSmall
+frame raw-1500 trained-2k-text-3000-level-5 36143 911 3000 err DictionaryWrong
+frame raw-1500 trained-2k-text-3000-level-5 36143 911 3100 err DictionaryWrong
+frame raw-1500 trained-2k-text-3000-level-5 36143 911 2999 err DictionaryWrong
+frame trained-2k trained-2k-mixed-3000-level1 37054 1120 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-2k trained-2k-mixed-3000-level1 37054 1120 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-2k trained-2k-mixed-3000-level1 37054 1120 2999 err DstSizeTooSmall
+frame raw-3-bytes trained-2k-mixed-3000-level1 37054 1120 3000 err DictionaryWrong
+frame raw-3-bytes trained-2k-mixed-3000-level1 37054 1120 3100 err DictionaryWrong
+frame raw-3-bytes trained-2k-mixed-3000-level1 37054 1120 2999 err DictionaryWrong
+frame trained-2k trained-2k-mixed-3000-level3 38174 1116 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-2k trained-2k-mixed-3000-level3 38174 1116 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-2k trained-2k-mixed-3000-level3 38174 1116 2999 err DstSizeTooSmall
+frame none trained-2k-mixed-3000-level3 38174 1116 3000 err CorruptionDetected
+frame none trained-2k-mixed-3000-level3 38174 1116 3100 err CorruptionDetected
+frame none trained-2k-mixed-3000-level3 38174 1116 2999 err CorruptionDetected
+frame trained-2k trained-2k-mixed-3000-level19 39290 1041 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-2k trained-2k-mixed-3000-level19 39290 1041 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-2k trained-2k-mixed-3000-level19 39290 1041 2999 err DstSizeTooSmall
+frame http trained-2k-mixed-3000-level19 39290 1041 3000 err DictionaryWrong
+frame http trained-2k-mixed-3000-level19 39290 1041 3100 err DictionaryWrong
+frame http trained-2k-mixed-3000-level19 39290 1041 2999 err DictionaryWrong
+frame trained-2k trained-2k-mixed-3000-level-5 40331 2314 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-2k trained-2k-mixed-3000-level-5 40331 2314 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-2k trained-2k-mixed-3000-level-5 40331 2314 2999 err DstSizeTooSmall
+frame zero-weight trained-2k-mixed-3000-level-5 40331 2314 3000 err DictionaryWrong
+frame zero-weight trained-2k-mixed-3000-level-5 40331 2314 3100 err DictionaryWrong
+frame zero-weight trained-2k-mixed-3000-level-5 40331 2314 2999 err DictionaryWrong
+frame trained-2k trained-2k-text-150k-level3 42645 30977 150000 ok 150000 274004cc6627de1f
+frame trained-2k trained-2k-text-150k-level3 42645 30977 150100 ok 150000 274004cc6627de1f
+frame trained-2k trained-2k-text-150k-level3 42645 30977 149999 err DstSizeTooSmall
+frame trained-16k trained-16k-headers-level1 90006 204 558 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level1 90006 204 658 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level1 90006 204 557 err DstSizeTooSmall
+frame trained-16k trained-16k-headers-level3 90210 202 558 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level3 90210 202 658 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level3 90210 202 557 err DstSizeTooSmall
+frame trained-2k trained-16k-headers-level3 90210 202 558 err CorruptionDetected
+frame trained-2k trained-16k-headers-level3 90210 202 658 err CorruptionDetected
+frame trained-2k trained-16k-headers-level3 90210 202 557 err CorruptionDetected
+frame trained-16k trained-16k-headers-level19 90412 171 558 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level19 90412 171 658 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level19 90412 171 557 err DstSizeTooSmall
+frame trained-16k trained-16k-headers-level19 90412 171 558 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level19 90412 171 658 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level19 90412 171 557 err DstSizeTooSmall
+frame trained-16k trained-16k-headers-level-5 90583 261 558 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level-5 90583 261 658 ok 558 80bb52058c01eac4
+frame trained-16k trained-16k-headers-level-5 90583 261 557 err DstSizeTooSmall
+frame raw-1500 trained-16k-headers-level-5 90583 261 558 err DictionaryWrong
+frame raw-1500 trained-16k-headers-level-5 90583 261 658 err DictionaryWrong
+frame raw-1500 trained-16k-headers-level-5 90583 261 557 err DictionaryWrong
+frame trained-16k trained-16k-text-3000-level1 90844 840 3000 ok 3000 a0e5576b54eea11f
+frame trained-16k trained-16k-text-3000-level1 90844 840 3100 ok 3000 a0e5576b54eea11f
+frame trained-16k trained-16k-text-3000-level1 90844 840 2999 err DstSizeTooSmall
+frame raw-3-bytes trained-16k-text-3000-level1 90844 840 3000 err DictionaryWrong
+frame raw-3-bytes trained-16k-text-3000-level1 90844 840 3100 err DictionaryWrong
+frame raw-3-bytes trained-16k-text-3000-level1 90844 840 2999 err DictionaryWrong
+frame trained-16k trained-16k-text-3000-level3 91684 649 3000 ok 3000 a0e5576b54eea11f
+frame trained-16k trained-16k-text-3000-level3 91684 649 3100 ok 3000 a0e5576b54eea11f
+frame trained-16k trained-16k-text-3000-level3 91684 649 2999 err DstSizeTooSmall
+frame none trained-16k-text-3000-level3 91684 649 3000 err CorruptionDetected
+frame none trained-16k-text-3000-level3 91684 649 3100 err CorruptionDetected
+frame none trained-16k-text-3000-level3 91684 649 2999 err CorruptionDetected
+frame trained-16k trained-16k-text-3000-level19 92333 530 3000 ok 3000 a0e5576b54eea11f
+frame trained-16k trained-16k-text-3000-level19 92333 530 3100 ok 3000 a0e5576b54eea11f
+frame trained-16k trained-16k-text-3000-level19 92333 530 2999 err DstSizeTooSmall
+frame http trained-16k-text-3000-level19 92333 530 3000 err DictionaryWrong
+frame http trained-16k-text-3000-level19 92333 530 3100 err DictionaryWrong
+frame http trained-16k-text-3000-level19 92333 530 2999 err DictionaryWrong
+frame trained-16k trained-16k-text-3000-level-5 92863 990 3000 ok 3000 a0e5576b54eea11f
+frame trained-16k trained-16k-text-3000-level-5 92863 990 3100 ok 3000 a0e5576b54eea11f
+frame trained-16k trained-16k-text-3000-level-5 92863 990 2999 err DstSizeTooSmall
+frame zero-weight trained-16k-text-3000-level-5 92863 990 3000 err DictionaryWrong
+frame zero-weight trained-16k-text-3000-level-5 92863 990 3100 err DictionaryWrong
+frame zero-weight trained-16k-text-3000-level-5 92863 990 2999 err DictionaryWrong
+frame trained-16k trained-16k-mixed-3000-level1 93853 1127 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level1 93853 1127 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level1 93853 1127 2999 err DstSizeTooSmall
+frame trained-16k trained-16k-mixed-3000-level3 94980 1127 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level3 94980 1127 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level3 94980 1127 2999 err DstSizeTooSmall
+frame trained-16k trained-16k-mixed-3000-level19 96107 1041 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level19 96107 1041 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level19 96107 1041 2999 err DstSizeTooSmall
+frame trained-2k trained-16k-mixed-3000-level19 96107 1041 3000 err DictionaryWrong
+frame trained-2k trained-16k-mixed-3000-level19 96107 1041 3100 err DictionaryWrong
+frame trained-2k trained-16k-mixed-3000-level19 96107 1041 2999 err DictionaryWrong
+frame trained-16k trained-16k-mixed-3000-level-5 97148 2318 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level-5 97148 2318 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level-5 97148 2318 2999 err DstSizeTooSmall
+frame trained-16k trained-16k-mixed-3000-level-5 97148 2318 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level-5 97148 2318 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-16k trained-16k-mixed-3000-level-5 97148 2318 2999 err DstSizeTooSmall
+frame trained-16k trained-16k-text-150k-level3 99466 30009 150000 ok 150000 274004cc6627de1f
+frame trained-16k trained-16k-text-150k-level3 99466 30009 150100 ok 150000 274004cc6627de1f
+frame trained-16k trained-16k-text-150k-level3 99466 30009 149999 err DstSizeTooSmall
+frame raw-1500 trained-16k-text-150k-level3 99466 30009 150000 err DictionaryCorrupted
+frame raw-1500 trained-16k-text-150k-level3 99466 30009 150100 err DictionaryCorrupted
+frame raw-1500 trained-16k-text-150k-level3 99466 30009 149999 err DictionaryCorrupted
+frame raw-1500 raw-1500-headers-level1 130975 168 558 ok 558 80bb52058c01eac4
+frame raw-1500 raw-1500-headers-level1 130975 168 658 ok 558 80bb52058c01eac4
+frame raw-1500 raw-1500-headers-level1 130975 168 557 err DstSizeTooSmall
+frame raw-3-bytes raw-1500-headers-level1 130975 168 558 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-1500-headers-level1 130975 168 658 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-1500-headers-level1 130975 168 557 err DstSizeTooSmall
+frame raw-1500 raw-1500-headers-level3 131143 172 558 ok 558 80bb52058c01eac4
+frame raw-1500 raw-1500-headers-level3 131143 172 658 ok 558 80bb52058c01eac4
+frame raw-1500 raw-1500-headers-level3 131143 172 557 err DstSizeTooSmall
+frame none raw-1500-headers-level3 131143 172 558 ok 558 80bb52058c01eac4
+frame none raw-1500-headers-level3 131143 172 658 ok 558 80bb52058c01eac4
+frame none raw-1500-headers-level3 131143 172 557 err DstSizeTooSmall
+frame raw-1500 raw-1500-headers-level19 131315 163 558 ok 558 80bb52058c01eac4
+frame raw-1500 raw-1500-headers-level19 131315 163 658 ok 558 80bb52058c01eac4
+frame raw-1500 raw-1500-headers-level19 131315 163 557 err DstSizeTooSmall
+frame http raw-1500-headers-level19 131315 163 558 ok 558 80bb52058c01eac4
+frame http raw-1500-headers-level19 131315 163 658 ok 558 80bb52058c01eac4
+frame http raw-1500-headers-level19 131315 163 557 err DstSizeTooSmall
+frame raw-1500 raw-1500-headers-level-5 131478 255 558 ok 558 80bb52058c01eac4
+frame raw-1500 raw-1500-headers-level-5 131478 255 658 ok 558 80bb52058c01eac4
+frame raw-1500 raw-1500-headers-level-5 131478 255 557 err DstSizeTooSmall
+frame zero-weight raw-1500-headers-level-5 131478 255 558 ok 558 80bb52058c01eac4
+frame zero-weight raw-1500-headers-level-5 131478 255 658 ok 558 80bb52058c01eac4
+frame zero-weight raw-1500-headers-level-5 131478 255 557 err DstSizeTooSmall
+frame raw-1500 raw-1500-text-3000-level1 131733 780 3000 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-1500-text-3000-level1 131733 780 3100 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-1500-text-3000-level1 131733 780 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-text-3000-level3 132513 715 3000 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-1500-text-3000-level3 132513 715 3100 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-1500-text-3000-level3 132513 715 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-text-3000-level19 133228 626 3000 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-1500-text-3000-level19 133228 626 3100 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-1500-text-3000-level19 133228 626 2999 err DstSizeTooSmall
+frame trained-2k raw-1500-text-3000-level19 133228 626 3000 ok 3000 d2178e82657d3afc
+frame trained-2k raw-1500-text-3000-level19 133228 626 3100 ok 3000 d2178e82657d3afc
+frame trained-2k raw-1500-text-3000-level19 133228 626 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-text-3000-level-5 133854 867 3000 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-1500-text-3000-level-5 133854 867 3100 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-1500-text-3000-level-5 133854 867 2999 err DstSizeTooSmall
+frame trained-16k raw-1500-text-3000-level-5 133854 867 3000 ok 3000 2670bbd4f68af531
+frame trained-16k raw-1500-text-3000-level-5 133854 867 3100 ok 3000 2670bbd4f68af531
+frame trained-16k raw-1500-text-3000-level-5 133854 867 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-mixed-3000-level1 134721 1104 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level1 134721 1104 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level1 134721 1104 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-mixed-3000-level1 134721 1104 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level1 134721 1104 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level1 134721 1104 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-mixed-3000-level3 135825 1106 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level3 135825 1106 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level3 135825 1106 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-1500-mixed-3000-level3 135825 1106 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-1500-mixed-3000-level3 135825 1106 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-1500-mixed-3000-level3 135825 1106 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-mixed-3000-level19 136931 1035 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level19 136931 1035 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level19 136931 1035 2999 err DstSizeTooSmall
+frame none raw-1500-mixed-3000-level19 136931 1035 3000 ok 3000 5cc089eaa86ef6a6
+frame none raw-1500-mixed-3000-level19 136931 1035 3100 ok 3000 5cc089eaa86ef6a6
+frame none raw-1500-mixed-3000-level19 136931 1035 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-mixed-3000-level-5 137966 2290 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level-5 137966 2290 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-1500 raw-1500-mixed-3000-level-5 137966 2290 2999 err DstSizeTooSmall
+frame http raw-1500-mixed-3000-level-5 137966 2290 3000 ok 3000 5cc089eaa86ef6a6
+frame http raw-1500-mixed-3000-level-5 137966 2290 3100 ok 3000 5cc089eaa86ef6a6
+frame http raw-1500-mixed-3000-level-5 137966 2290 2999 err DstSizeTooSmall
+frame raw-1500 raw-1500-text-150k-level3 140256 30939 150000 ok 150000 274004cc6627de1f
+frame raw-1500 raw-1500-text-150k-level3 140256 30939 150100 ok 150000 274004cc6627de1f
+frame raw-1500 raw-1500-text-150k-level3 140256 30939 149999 err DstSizeTooSmall
+frame zero-weight raw-1500-text-150k-level3 140256 30939 150000 err CorruptionDetected
+frame zero-weight raw-1500-text-150k-level3 140256 30939 150100 err CorruptionDetected
+frame zero-weight raw-1500-text-150k-level3 140256 30939 149999 err CorruptionDetected
+frame raw-3-bytes raw-3-bytes-headers-level1 171198 168 558 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-3-bytes-headers-level1 171198 168 658 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-3-bytes-headers-level1 171198 168 557 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-headers-level3 171366 172 558 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-3-bytes-headers-level3 171366 172 658 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-3-bytes-headers-level3 171366 172 557 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-headers-level19 171538 164 558 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-3-bytes-headers-level19 171538 164 658 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-3-bytes-headers-level19 171538 164 557 err DstSizeTooSmall
+frame trained-2k raw-3-bytes-headers-level19 171538 164 558 ok 558 80bb52058c01eac4
+frame trained-2k raw-3-bytes-headers-level19 171538 164 658 ok 558 80bb52058c01eac4
+frame trained-2k raw-3-bytes-headers-level19 171538 164 557 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-headers-level-5 171702 205 558 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-3-bytes-headers-level-5 171702 205 658 ok 558 80bb52058c01eac4
+frame raw-3-bytes raw-3-bytes-headers-level-5 171702 205 557 err DstSizeTooSmall
+frame trained-16k raw-3-bytes-headers-level-5 171702 205 558 ok 558 80bb52058c01eac4
+frame trained-16k raw-3-bytes-headers-level-5 171702 205 658 ok 558 80bb52058c01eac4
+frame trained-16k raw-3-bytes-headers-level-5 171702 205 557 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-text-3000-level1 171907 839 3000 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level1 171907 839 3100 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level1 171907 839 2999 err DstSizeTooSmall
+frame raw-1500 raw-3-bytes-text-3000-level1 171907 839 3000 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-3-bytes-text-3000-level1 171907 839 3100 ok 3000 a0e5576b54eea11f
+frame raw-1500 raw-3-bytes-text-3000-level1 171907 839 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-text-3000-level3 172746 805 3000 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level3 172746 805 3100 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level3 172746 805 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-text-3000-level3 172746 805 3000 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level3 172746 805 3100 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level3 172746 805 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-text-3000-level19 173551 712 3000 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level19 173551 712 3100 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level19 173551 712 2999 err DstSizeTooSmall
+frame none raw-3-bytes-text-3000-level19 173551 712 3000 ok 3000 a0e5576b54eea11f
+frame none raw-3-bytes-text-3000-level19 173551 712 3100 ok 3000 a0e5576b54eea11f
+frame none raw-3-bytes-text-3000-level19 173551 712 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-text-3000-level-5 174263 1102 3000 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level-5 174263 1102 3100 ok 3000 a0e5576b54eea11f
+frame raw-3-bytes raw-3-bytes-text-3000-level-5 174263 1102 2999 err DstSizeTooSmall
+frame http raw-3-bytes-text-3000-level-5 174263 1102 3000 ok 3000 a0e5576b54eea11f
+frame http raw-3-bytes-text-3000-level-5 174263 1102 3100 ok 3000 a0e5576b54eea11f
+frame http raw-3-bytes-text-3000-level-5 174263 1102 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-mixed-3000-level1 175365 1099 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-3-bytes-mixed-3000-level1 175365 1099 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-3-bytes-mixed-3000-level1 175365 1099 2999 err DstSizeTooSmall
+frame zero-weight raw-3-bytes-mixed-3000-level1 175365 1099 3000 ok 3000 5cc089eaa86ef6a6
+frame zero-weight raw-3-bytes-mixed-3000-level1 175365 1099 3100 ok 3000 5cc089eaa86ef6a6
+frame zero-weight raw-3-bytes-mixed-3000-level1 175365 1099 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-mixed-3000-level3 176464 1101 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-3-bytes-mixed-3000-level3 176464 1101 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-3-bytes-mixed-3000-level3 176464 1101 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-mixed-3000-level19 177565 1035 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-3-bytes-mixed-3000-level19 177565 1035 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-3-bytes-mixed-3000-level19 177565 1035 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-mixed-3000-level-5 178600 1861 3000 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-3-bytes-mixed-3000-level-5 178600 1861 3100 ok 3000 5cc089eaa86ef6a6
+frame raw-3-bytes raw-3-bytes-mixed-3000-level-5 178600 1861 2999 err DstSizeTooSmall
+frame trained-2k raw-3-bytes-mixed-3000-level-5 178600 1861 3000 ok 3000 5cc089eaa86ef6a6
+frame trained-2k raw-3-bytes-mixed-3000-level-5 178600 1861 3100 ok 3000 5cc089eaa86ef6a6
+frame trained-2k raw-3-bytes-mixed-3000-level-5 178600 1861 2999 err DstSizeTooSmall
+frame raw-3-bytes raw-3-bytes-text-150k-level3 180461 31703 150000 ok 150000 274004cc6627de1f
+frame raw-3-bytes raw-3-bytes-text-150k-level3 180461 31703 150100 ok 150000 274004cc6627de1f
+frame raw-3-bytes raw-3-bytes-text-150k-level3 180461 31703 149999 err DstSizeTooSmall
+frame trained-16k raw-3-bytes-text-150k-level3 180461 31703 150000 ok 150000 274004cc6627de1f
+frame trained-16k raw-3-bytes-text-150k-level3 180461 31703 150100 ok 150000 274004cc6627de1f
+frame trained-16k raw-3-bytes-text-150k-level3 180461 31703 149999 err DstSizeTooSmall

@@ -7,6 +7,8 @@
 #
 # SET picks the directories zst$SET and orig$SET (default: zst and orig), so
 # several sets can coexist, e.g. SET=-bs10 ... --max-block-size-log=10.
+# With --use-dict=SIZE the frames use a generated dictionary of SIZE bytes: they go to
+# dict$SET/{zst,orig}, with the dictionary next to the frames (dict$SET/zst/dictionary).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -28,7 +30,13 @@ cc -O2 -w -DZSTD_LEGACY_SUPPORT=0 -DZSTD_MULTITHREAD=0 \
 
 out=corpus/decodecorpus
 set_name=${SET:-}
-rm -rf "$out/zst$set_name" "$out/orig$set_name"
-mkdir -p "$out/zst$set_name" "$out/orig$set_name"
-$bin -p"$out/zst$set_name/" -o"$out/orig$set_name/" -n"$count" -s"$seed" "$@"
-echo "$(ls "$out/zst$set_name" | wc -l) frames in $out/zst$set_name"
+zst=$out/zst$set_name
+orig=$out/orig$set_name
+if [[ " $* " == *" --use-dict"* ]]; then
+  zst=$out/dict$set_name/zst
+  orig=$out/dict$set_name/orig
+fi
+rm -rf "$zst" "$orig"
+mkdir -p "$zst" "$orig"
+$bin -p"$zst/" -o"$orig/" -n"$count" -s"$seed" "$@"
+echo "$(ls "$zst" | wc -l) files in $zst"

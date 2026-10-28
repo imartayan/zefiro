@@ -135,6 +135,55 @@ impl Libzstd {
         .outcome
     }
 
+    /// `ZSTD_DCtx_loadDictionary` (copied, content type auto) for every later call; an empty
+    /// slice clears it. A formatted dictionary that is corrupted is refused, as
+    /// `memory_allocation` (libzstd cannot build the digested dictionary).
+    pub fn load_dictionary(&mut self, dictionary: &[u8]) -> Result<(), Code> {
+        // SAFETY: the slice is valid for its length, dctx is live.
+        let result = unsafe {
+            ZSTD_DCtx_loadDictionary(
+                self.dctx,
+                dictionary.as_ptr().cast::<c_void>(),
+                dictionary.len(),
+            )
+        };
+        if is_error(result) {
+            return Err(Code::from_result(result));
+        }
+        Ok(())
+    }
+
+    /// `ZSTD_decompress_usingDict` into a buffer of `capacity` bytes: the dictionary is
+    /// parsed when the first frame starts (`dictionary_corrupted`).
+    pub fn decompress_using_dict(
+        &mut self,
+        input: &[u8],
+        capacity: usize,
+        dictionary: &[u8],
+    ) -> Outcome {
+        let mut output = vec![0u8; capacity];
+        // SAFETY: all slices are valid for the lengths passed, dctx is live.
+        let result = unsafe {
+            ZSTD_decompress_usingDict(
+                self.dctx,
+                output.as_mut_ptr().cast::<c_void>(),
+                output.len(),
+                input.as_ptr().cast::<c_void>(),
+                input.len(),
+                dictionary.as_ptr().cast::<c_void>(),
+                dictionary.len(),
+            )
+        };
+        if is_error(result) {
+            return Outcome::Err(Code::from_result(result));
+        }
+        output.truncate(result);
+        Outcome::Ok {
+            consumed: input.len(),
+            output,
+        }
+    }
+
     /// One `ZSTD_decompressStream` call on the whole of `input` and `output`.
     pub fn stream_step(&mut self, input: &[u8], output: &mut [u8]) -> Result<Step, Code> {
         let mut in_buf = ZSTD_inBuffer {
@@ -172,7 +221,8 @@ impl Libzstd {
         assert!(!is_error(result), "window log {log} out of bounds");
     }
 
-    pub(crate) fn reset_session(&mut self) {
+    /// `ZSTD_reset_session_only`: abandons a stream, keeps parameters and dictionary.
+    pub fn reset_session(&mut self) {
         // SAFETY: dctx is live.
         let result =
             unsafe { ZSTD_DCtx_reset(self.dctx, ZSTD_ResetDirective::ZSTD_reset_session_only) };

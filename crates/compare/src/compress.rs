@@ -85,6 +85,26 @@ impl Cctx {
         cctx
     }
 
+    fn compress(&self, data: &[u8]) -> Option<Vec<u8>> {
+        // SAFETY: bound is a pure function.
+        let mut out = vec![0u8; unsafe { ZSTD_compressBound(data.len()) }];
+        // SAFETY: slices are valid for the lengths passed.
+        let n = unsafe {
+            ZSTD_compress2(
+                self.0,
+                out.as_mut_ptr().cast::<c_void>(),
+                out.len(),
+                data.as_ptr().cast::<c_void>(),
+                data.len(),
+            )
+        };
+        if is_error(n) {
+            return None;
+        }
+        out.truncate(n);
+        Some(out)
+    }
+
     fn set(&self, param: ZSTD_cParameter, value: i32) {
         // SAFETY: cctx is live.
         let result = unsafe { ZSTD_CCtx_setParameter(self.0, param, value) };
@@ -99,25 +119,63 @@ impl Drop for Cctx {
     }
 }
 
+/// A dictionary trained by `ZDICT_trainFromBuffer` on `samples`, of at most `capacity`
+/// bytes (`None` if libzstd cannot train one).
+#[must_use]
+pub fn train_dictionary(samples: &[&[u8]], capacity: usize) -> Option<Vec<u8>> {
+    let flat = samples.concat();
+    let sizes: Vec<usize> = samples.iter().map(|sample| sample.len()).collect();
+    let mut dictionary = vec![0u8; capacity];
+    // SAFETY: the buffers are valid for the lengths passed, `sizes` has one entry per sample.
+    let size = unsafe {
+        ZDICT_trainFromBuffer(
+            dictionary.as_mut_ptr().cast::<c_void>(),
+            capacity,
+            flat.as_ptr().cast::<c_void>(),
+            sizes.as_ptr(),
+            sizes.len() as u32,
+        )
+    };
+    // SAFETY: pure function of its argument.
+    if unsafe { ZDICT_isError(size) } != 0 {
+        return None;
+    }
+    dictionary.truncate(size);
+    Some(dictionary)
+}
+
+/// One frame with `dictionary` (`ZSTD_CCtx_loadDictionary`, content type auto), writing
+/// its ID in the frame header if it has one and `write_id`. `None` if the encoder refuses
+/// the dictionary (or fails on this input).
+#[must_use]
+pub fn compress_with_dictionary(
+    data: &[u8],
+    params: &Params,
+    dictionary: &[u8],
+    write_id: bool,
+) -> Option<Vec<u8>> {
+    let cctx = Cctx::new(params);
+    cctx.set(ZSTD_cParameter::ZSTD_c_dictIDFlag, write_id.into());
+    // SAFETY: the slice is valid for its length, cctx is live.
+    let loaded = unsafe {
+        ZSTD_CCtx_loadDictionary(
+            cctx.0,
+            dictionary.as_ptr().cast::<c_void>(),
+            dictionary.len(),
+        )
+    };
+    if is_error(loaded) {
+        return None;
+    }
+    cctx.compress(data)
+}
+
 /// One frame, one call (`ZSTD_compress2`).
 #[must_use]
 pub fn compress(data: &[u8], params: &Params) -> Vec<u8> {
-    let cctx = Cctx::new(params);
-    // SAFETY: bound is a pure function.
-    let mut out = vec![0u8; unsafe { ZSTD_compressBound(data.len()) }];
-    // SAFETY: slices are valid for the lengths passed.
-    let n = unsafe {
-        ZSTD_compress2(
-            cctx.0,
-            out.as_mut_ptr().cast::<c_void>(),
-            out.len(),
-            data.as_ptr().cast::<c_void>(),
-            data.len(),
-        )
-    };
-    assert!(!is_error(n), "compression failed");
-    out.truncate(n);
-    out
+    Cctx::new(params)
+        .compress(data)
+        .expect("compression failed")
 }
 
 /// One frame of unknown content size, compressed in steps: each step feeds

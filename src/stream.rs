@@ -7,15 +7,14 @@ use alloc::vec::Vec;
 use core::hash::Hasher;
 use core::mem;
 
-use twox_hash::XxHash64;
-
 use crate::copy::WILDCOPY_OVERLENGTH;
-use crate::decoder::{Decoder, decompress_compressed_block};
+use crate::decoder::{Decoder, History, decompress_compressed_block};
 use crate::error::Error;
 use crate::frame::{
     BLOCK_HEADER_SIZE, BlockType, FrameHeader, FrameStart, find_frame_size, parse_block_header,
     parse_frame_start, read_le32,
 };
+use crate::sequences::Ext;
 
 const FRAME_HEADER_SIZE_MAX: usize = 18;
 const CHECKSUM_SIZE: usize = 4;
@@ -91,6 +90,8 @@ pub(crate) struct Stream {
     out_end: usize,
     segment_end: usize,
     ext_len: usize,
+    // The history before the segment is the dictionary, until the ring restarts.
+    ext_dict: bool,
     // The last input byte of a finished frame is kept until its output is flushed.
     hostage: bool,
 }
@@ -120,13 +121,18 @@ impl Stream {
             out_end: 0,
             segment_end: 0,
             ext_len: 0,
+            ext_dict: false,
             hostage: false,
         }
     }
 
+    pub(crate) fn reset(&mut self) {
+        self.phase = Phase::Init;
+    }
+
     // The window check and buffer sizing of `zdss_loadHeader` (a skippable frame has no
     // window and no blocks).
-    fn begin_frame(&mut self, header: &FrameHeader) -> Result<(), Error> {
+    fn begin_frame(&mut self, header: &FrameHeader, has_dictionary: bool) -> Result<(), Error> {
         let window_size = header.window_size.max(WINDOW_SIZE_MIN);
         if window_size > self.max_window_size {
             return Err(Error::WindowTooLarge);
@@ -139,6 +145,7 @@ impl Stream {
         self.decoded_size = 0;
         self.segment_end = 0;
         self.ext_len = 0;
+        self.ext_dict = has_dictionary;
         self.stage = Stage::BlockHeader;
         self.expected = BLOCK_HEADER_SIZE;
         Ok(())
@@ -213,7 +220,7 @@ impl Decoder {
     ) -> Result<Progress, Error> {
         let result = self.stream_calls(input, output);
         if result.is_err() {
-            self.stream.phase = Phase::Init;
+            self.stream.reset();
         }
         result
     }
@@ -279,18 +286,12 @@ impl Decoder {
                             frame_done: true,
                         });
                     }
-                    self.literals.start_frame();
-                    self.sequences.start_frame();
+                    self.begin_frame();
                     match start {
                         FrameStart::Frame(header) => {
-                            // Phase 5 compares with the id of the loaded dictionary.
-                            if header.dict_id != 0 {
-                                return Err(Error::DictionaryWrong);
-                            }
-                            if header.checksum {
-                                self.checksum = XxHash64::with_seed(0);
-                            }
-                            self.stream.begin_frame(&header)?;
+                            self.check_frame_header(&header)?;
+                            self.stream
+                                .begin_frame(&header, self.dictionary.is_some())?;
                         }
                         FrameStart::Skippable { content_size } => {
                             self.stream.begin_skippable_frame(content_size)?;
@@ -417,10 +418,13 @@ impl Decoder {
             sequences,
             checksum,
             stream,
+            dictionary,
         } = self;
         // `ZSTD_checkContinuity`: after a restart the previous segment becomes history.
         if capacity > 0 && stream.out_start != stream.segment_end {
             stream.ext_len = stream.segment_end;
+            stream.ext_dict = false;
+            sequences.dictionary_end_kept = false;
             stream.segment_end = stream.out_start;
         }
         match stream.stage {
@@ -450,6 +454,10 @@ impl Decoder {
                 let decoded = match stream.block_type {
                     BlockType::Compressed => {
                         stream.expected = 0;
+                        let ext = match dictionary {
+                            Some(dictionary) if stream.ext_dict => Ext::Dict(dictionary.padded()),
+                            _ => Ext::Ring(stream.ext_len),
+                        };
                         decompress_compressed_block(
                             literals,
                             sequences,
@@ -457,7 +465,10 @@ impl Decoder {
                             &mut stream.ring[..stream.ring_len],
                             start,
                             stream.block_size_max,
-                            Some(stream.ext_len),
+                            History {
+                                ext,
+                                streaming: true,
+                            },
                         )?
                     }
                     BlockType::Raw => {

@@ -66,7 +66,7 @@ fn run(
     let end = history.len() + capacity;
     let place = Placement {
         range: history.len()..end,
-        ext_len: 0,
+        ext: Ext::Ring(0),
         total_history: 0,
     };
     let block_end = state.execute_block(nb_seq, stream, &literals, &mut out, &place)?;
@@ -151,7 +151,7 @@ fn repeat_mode_needs_a_block_that_started_decoding() {
     let mut out = [0; 10];
     let place = Placement {
         range: 0..10,
-        ext_len: 0,
+        ext: Ext::Ring(0),
         total_history: 0,
     };
     assert!(
@@ -240,7 +240,15 @@ fn execution_checks_in_libzstd_order() {
     let literals = *b"abcdefgh";
     let mut position = 0;
     let mut run = |out: &mut [u8], op, end, sequence| {
-        exec_sequence_exact(out, op, end, sequence, &literals, &mut position, 0)
+        exec_sequence_exact(
+            out,
+            op,
+            end,
+            sequence,
+            &literals,
+            &mut position,
+            Ext::Ring(0),
+        )
     };
     let mut out = [0u8; 64];
     out[..4].copy_from_slice(b"wxyz");
@@ -285,7 +293,7 @@ fn matches_reach_the_previous_ring_segment() {
         ring[36..40].copy_from_slice(b"6789");
         let place = Placement {
             range: 0..end,
-            ext_len: 40,
+            ext: Ext::Ring(40),
             total_history: 0,
         };
         let block_end = state.execute_block(nb_seq, stream, &literals, &mut ring, &place);
@@ -296,7 +304,44 @@ fn matches_reach_the_previous_ring_segment() {
     // Four bytes back from the start of a segment, with 3 bytes of the previous one.
     let place = Placement {
         range: 0..70,
-        ext_len: 3,
+        ext: Ext::Ring(3),
+        total_history: 0,
+    };
+    let result = state.execute_block(nb_seq, stream, &literals, &mut [0; 70], &place);
+    assert_eq!(result, Err(Error::CorruptionDetected));
+}
+
+#[test]
+fn matches_reach_a_dictionary() {
+    // The test above with the history in a dictionary (with its slack), for output ends
+    // that take the wild copy and the exact path.
+    let block = rle_block(3, (0, 0, 0), &[]);
+    let mut state = SequencesState::new();
+    let (nb_seq, stream) = state.read_header(&block).unwrap();
+    let (padded, len) = literals(b"");
+    let literals = Literals {
+        padded: &padded,
+        len,
+        in_input: false,
+    };
+    let dictionary = |content: &[u8]| [content, &[0xAA; WILDCOPY_OVERLENGTH]].concat();
+    let history = dictionary(&[[b'.'; 36].as_slice(), b"6789"].concat());
+    for end in 9..=70 {
+        let mut out = [b'.'; 70];
+        let place = Placement {
+            range: 0..end,
+            ext: Ext::Dict(&history),
+            total_history: 0,
+        };
+        let block_end = state.execute_block(nb_seq, stream, &literals, &mut out, &place);
+        assert_eq!(block_end, Ok(9), "end {end}");
+        assert_eq!(&out[..9], b"678888888", "end {end}");
+        state.repeat_offsets = INITIAL_REPEAT_OFFSETS;
+    }
+    let short = dictionary(b"789");
+    let place = Placement {
+        range: 0..70,
+        ext: Ext::Dict(&short),
         total_history: 0,
     };
     let result = state.execute_block(nb_seq, stream, &literals, &mut [0; 70], &place);
@@ -398,11 +443,13 @@ fn run_loop<const PREFETCH: bool>(
     let end = history.len() + capacity;
     let place = Placement {
         range: history.len()..end,
-        ext_len: 0,
+        ext: Ext::Ring(0),
         total_history: 0,
     };
-    let (op, _, repeat_offsets) = state
-        .run_sequences::<Portable, PREFETCH, false>(nb_seq, stream, &literals, &mut out, &place)?;
+    let tables = &*state.tables;
+    let (op, _, repeat_offsets) = state.run_sequences::<Portable, PREFETCH, false>(
+        tables, nb_seq, stream, &literals, &mut out, &place,
+    )?;
     Ok((out[history.len()..op].to_vec(), repeat_offsets))
 }
 

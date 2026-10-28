@@ -19,6 +19,7 @@ fn fuzz_findings_stay_fixed() {
             ("round_trip", Some("bin")) => fuzz::round_trip,
             ("mutate", Some("bin")) => fuzz::mutate,
             ("stream", Some("bin")) => fuzz::stream,
+            ("dict", Some("bin")) => fuzz::dict,
             _ => continue,
         };
         body(&std::fs::read(&path).unwrap());

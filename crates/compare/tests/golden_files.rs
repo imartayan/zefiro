@@ -135,3 +135,121 @@ fn regenerate_golden_files() {
     std::fs::write(root.join("golden.bin"), archive).unwrap();
     std::fs::write(root.join("golden.txt"), manifest).unwrap();
 }
+
+/// `tests/data/golden-dictionary.{bin,txt}` for the root `tests/dictionary.rs`: dictionaries
+/// (libzstd's own test files, trained and raw ones, invalid ones) with libzstd's verdict on
+/// loading them, and frames made with them with the verdicts of decoding at some capacities.
+#[test]
+#[allow(clippy::print_stderr)]
+fn regenerate_dictionary_golden_files() {
+    if std::env::var_os("UPDATE_GOLDEN").is_none() {
+        eprintln!("skipped: set UPDATE_GOLDEN=1 to rewrite tests/data/golden-dictionary*");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data");
+    let samples = test_corpus();
+    let sample = |name: &str| {
+        samples
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap()
+            .data
+            .clone()
+    };
+    let (text, mixed) = (sample("text-262144"), sample("mixed-262144"));
+    let training: Vec<&[u8]> = text.chunks(500).chain(mixed.chunks(700)).collect();
+    let http = std::fs::read(root.join("dictionaries/http-dict-missing-symbols")).unwrap();
+    let zero_weight = std::fs::read(root.join("dictionaries/zero-weight-dict")).unwrap();
+    let invalid_rep = std::fs::read(root.join("dictionaries/invalid-rep-code")).unwrap();
+    let mut magic_only = vec![0x37, 0xA4, 0x30, 0xEC];
+    magic_only.extend_from_slice(&[7, 0, 0, 0]);
+    let dictionaries: Vec<(&str, Vec<u8>)> = vec![
+        ("none", vec![]),
+        ("http", http),
+        ("zero-weight", zero_weight),
+        ("invalid-rep-code", invalid_rep),
+        ("magic-only", magic_only),
+        ("trained-2k", train_dictionary(&training, 2048).unwrap()),
+        ("trained-16k", train_dictionary(&training, 16384).unwrap()),
+        ("raw-1500", text[3000..4500].to_vec()),
+        ("raw-3-bytes", b"abc".to_vec()),
+    ];
+    let http_headers = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: 1234\r\nCache-Control: max-age=3600\r\nServer: nginx\r\nDate: Tue, 28 Oct 2026 12:00:00 GMT\r\nConnection: keep-alive\r\n\r\n".repeat(3);
+    let payloads: Vec<(&str, Vec<u8>)> = vec![
+        ("headers", http_headers),
+        ("text-3000", text[5000..8000].to_vec()),
+        ("mixed-3000", mixed[100_000..103_000].to_vec()),
+        ("text-150k", text[..150_000].to_vec()),
+    ];
+
+    let mut manifest = String::from(
+        "# dict <name> <offset> <length> <ok|err Code>: libzstd 1.5.7 loading it\n# frame <dictionary> <payload> <offset> <length> <capacity> <verdict>: decoding with it\n",
+    );
+    let mut archive = Vec::new();
+    let mut frames = Vec::new();
+    for (name, bytes) in &dictionaries {
+        let offset = archive.len();
+        archive.extend_from_slice(bytes);
+        let loaded = match Libzstd::new().load_dictionary(bytes) {
+            Ok(()) => "ok".to_string(),
+            Err(_) => "err DictionaryCorrupted".to_string(),
+        };
+        writeln!(manifest, "dict {name} {offset} {} {loaded}", bytes.len()).unwrap();
+        if loaded != "ok" {
+            continue;
+        }
+        for (payload_name, payload) in &payloads {
+            for (level, write_id) in [(1, true), (3, false), (19, true), (-5, true)] {
+                // The big payload: two blocks, few frames.
+                if payload.len() > 100_000 && (level != 3 || !name.starts_with(['t', 'r'])) {
+                    continue;
+                }
+                let params = Params {
+                    checksum: level == 3,
+                    ..Params::level(level)
+                };
+                let frame = compress_with_dictionary(payload, &params, bytes, write_id).unwrap();
+                frames.push((
+                    name.to_string(),
+                    format!("{payload_name}-level{level}"),
+                    payload.len(),
+                    archive.len(),
+                    frame.clone(),
+                ));
+                archive.extend_from_slice(&frame);
+            }
+        }
+    }
+    // Every frame with its dictionary, and with another one (wrong or missing).
+    for (index, (own, label, len, offset, frame)) in frames.iter().enumerate() {
+        let others = [
+            dictionaries.iter().find(|(n, _)| n == own).unwrap(),
+            &dictionaries[index % dictionaries.len()],
+        ];
+        for (dictionary_name, dictionary) in others {
+            if Libzstd::new().load_dictionary(dictionary).is_err() {
+                continue;
+            }
+            for capacity in [*len, len + 100, len - 1] {
+                // A new context: libzstd takes another sequence loop for the first block
+                // after loading a dictionary.
+                let mut oracle = Libzstd::new();
+                oracle.load_dictionary(dictionary).unwrap();
+                let verdict = match oracle.decompress(frame, capacity) {
+                    Outcome::Ok { output, .. } => {
+                        format!("ok {} {:016x}", output.len(), fnv1a(&output))
+                    }
+                    Outcome::Err(code) => format!("err {code:?}"),
+                };
+                writeln!(
+                    manifest,
+                    "frame {dictionary_name} {own}-{label} {offset} {} {capacity} {verdict}",
+                    frame.len()
+                )
+                .unwrap();
+            }
+        }
+    }
+    std::fs::write(root.join("golden-dictionary.bin"), archive).unwrap();
+    std::fs::write(root.join("golden-dictionary.txt"), manifest).unwrap();
+}

@@ -11,15 +11,17 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{fs, process};
 
-use rust_zstd_decoder::Decoder;
+use rust_zstd_decoder::{Decoder, Dictionary};
 
 use crate::corpus::corpus_dir;
-use crate::{Libzstd, Params, Rng, Step, compress};
+use crate::{Libzstd, Params, Rng, Step, compress, compress_with_dictionary, train_dictionary};
 
 const CORPUS_FILES: &[&str] = &["elf_8m", "rust_src_8m", "silesia-small.tar", "words_1m"];
 const LEVELS: &[i32] = &[1, 3, 9, 19, 22];
 const SMALL_FRAME_SIZES: &[usize] = &[256, 1 << 10, 4 << 10];
 const SMALL_LEVEL: i32 = 3;
+const DICTIONARY_SIZE: usize = 64 << 10;
+const DICTIONARY_SAMPLE: usize = 1 << 10;
 const SMALL_SOURCE_CHUNK: usize = 1 << 20;
 const GENERATED_SIZE: usize = 4 << 20;
 const LONG_WINDOW_LOG: i32 = 27;
@@ -39,6 +41,8 @@ pub trait Impl {
     fn name(&self) -> &'static str;
     /// Decompresses `input`, whose content is `size` bytes, and returns it.
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8];
+    /// Uses `dictionary` (empty: none) for the following frames.
+    fn set_dictionary(&mut self, dictionary: &[u8]);
 }
 
 #[derive(Debug)]
@@ -46,6 +50,7 @@ pub struct Case {
     pub name: String,
     source: Arc<Vec<u8>>,
     frames: Vec<(Vec<u8>, Range<usize>)>,
+    dictionary: Arc<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -87,7 +92,13 @@ impl Case {
             name,
             source,
             frames,
+            dictionary: Arc::default(),
         }
+    }
+
+    fn with_dictionary(mut self, dictionary: Arc<Vec<u8>>) -> Self {
+        self.dictionary = dictionary;
+        self
     }
 
     fn content_bytes(&self) -> usize {
@@ -163,6 +174,11 @@ impl Impl for Ours {
             .expect("ours failed");
         &self.buffer[..written]
     }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        let parsed = Dictionary::new(dictionary).expect("dictionary refused");
+        self.decoder.set_dictionary(Some(&parsed));
+    }
 }
 
 impl LibzstdImpl {
@@ -187,6 +203,12 @@ impl Impl for LibzstdImpl {
             .expect("libzstd failed");
         &self.buffer[..written]
     }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.dctx
+            .load_dictionary(dictionary)
+            .expect("dictionary refused");
+    }
 }
 
 impl Impl for OursStream {
@@ -209,6 +231,10 @@ impl Impl for OursStream {
         });
         &buffer[..written]
     }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.0.set_dictionary(dictionary);
+    }
 }
 
 impl Impl for LibzstdStream {
@@ -223,6 +249,10 @@ impl Impl for LibzstdStream {
             dctx.stream_step(input, output).expect("libzstd failed")
         });
         &buffer[..written]
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.0.set_dictionary(dictionary);
     }
 }
 
@@ -340,6 +370,32 @@ pub fn cases(filters: &[String]) -> Vec<Case> {
         }
     }
 
+    let dict_names: Vec<_> = SMALL_FRAME_SIZES
+        .iter()
+        .map(|&size| (size, small_name(size).replace("small", "dict")))
+        .filter(|(_, name)| keep(name))
+        .collect();
+    if !dict_names.is_empty() {
+        let source = Arc::new(small_source());
+        let dictionary = Arc::new(trained_dictionary(&source));
+        for (size, name) in dict_names {
+            let frames = (0..source.len() / size)
+                .map(|i| {
+                    let range = i * size..(i + 1) * size;
+                    let frame = compress_with_dictionary(
+                        &source[range.clone()],
+                        &Params::level(SMALL_LEVEL),
+                        &dictionary,
+                        true,
+                    );
+                    (frame.expect("dictionary refused"), range)
+                })
+                .collect();
+            let case = Case::new(name, source.clone(), frames);
+            out.push(case.with_dictionary(dictionary.clone()));
+        }
+    }
+
     let mut rng = Rng::with_seed(0x9E37_79B9_7F4A_7C15);
     let generated = [
         ("raw-4m", (0..GENERATED_SIZE).map(|_| rng.u8(..)).collect()),
@@ -362,6 +418,7 @@ pub fn run(cases: &[Case], impls: &mut [Box<dyn Impl>], rounds: usize) -> Vec<Ro
     for case in cases {
         eprintln!("{}", case.name);
         for imp in impls.iter_mut() {
+            imp.set_dictionary(&case.dictionary);
             for (frame, range) in &case.frames {
                 let output = imp.decompress(frame, range.len());
                 assert!(
@@ -512,6 +569,27 @@ fn long_source() -> Vec<u8> {
         out.extend_from_within(start..start + len);
     }
     out
+}
+
+/// A dictionary trained on the 1 KiB pieces of `source` (cached like the frames).
+fn trained_dictionary(source: &[u8]) -> Vec<u8> {
+    let dir = std::env::var_os("ZSTD_BENCH_CACHE").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/bench-cache"),
+        PathBuf::from,
+    );
+    let path = dir.join(format!("dictionary-{:016x}.bin", content_hash(source)));
+    if let Ok(dictionary) = fs::read(&path) {
+        return dictionary;
+    }
+    let samples: Vec<&[u8]> = source.chunks(DICTIONARY_SAMPLE).collect();
+    let dictionary = train_dictionary(&samples, DICTIONARY_SIZE).expect("training failed");
+    if fs::create_dir_all(&dir)
+        .and_then(|()| fs::write(&path, &dictionary))
+        .is_err()
+    {
+        eprintln!("warning: cannot write {}", path.display());
+    }
+    dictionary
 }
 
 fn content_hash(data: &[u8]) -> u64 {

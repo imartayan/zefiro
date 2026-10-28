@@ -2,6 +2,7 @@ use core::hash::Hasher;
 
 use twox_hash::XxHash64;
 
+use crate::dict::Dictionary;
 use crate::error::Error;
 use crate::frame::{
     BLOCK_HEADER_SIZE, BlockType, FRAME_HEADER_MIN_SIZE, FRAME_HEADER_PREFIX_SIZE, FrameHeader,
@@ -9,7 +10,7 @@ use crate::frame::{
     read_le32, skippable_frame_size,
 };
 use crate::literals::LiteralsState;
-use crate::sequences::{Placement, SequencesState, block_output_limit};
+use crate::sequences::{Ext, Placement, SequencesState, block_output_limit};
 use crate::stream::Stream;
 
 const CHECKSUM_SIZE: usize = 4;
@@ -21,6 +22,7 @@ pub struct Decoder {
     pub(crate) literals: LiteralsState,
     pub(crate) sequences: SequencesState,
     pub(crate) stream: Stream,
+    pub(crate) dictionary: Option<Dictionary>,
 }
 
 impl Decoder {
@@ -31,7 +33,21 @@ impl Decoder {
             literals: LiteralsState::new(),
             sequences: SequencesState::new(),
             stream: Stream::new(),
+            dictionary: None,
         }
+    }
+
+    /// Decodes every following frame with `dictionary` (`ZSTD_DCtx_loadDictionary`), or
+    /// with none for `None`. A frame states the ID of the dictionary it needs, which must be
+    /// the one of a formatted dictionary (a raw content one has ID 0, a frame with an ID
+    /// needs a dictionary with that ID: `DictionaryWrong`). A stream in the middle of a
+    /// frame is abandoned, like after an error.
+    pub fn set_dictionary(&mut self, dictionary: Option<&Dictionary>) {
+        self.dictionary = dictionary.filter(|d| !d.is_empty()).cloned();
+        self.literals.set_dictionary(self.dictionary.as_ref());
+        self.sequences.set_dictionary(self.dictionary.as_ref());
+        self.sequences.dictionary_end_kept = false;
+        self.stream.reset();
     }
 
     /// Decodes every frame of `input` into `output` and returns the number of
@@ -71,6 +87,7 @@ impl Decoder {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<(usize, usize), Error> {
+        self.begin_frame();
         if input.len() < FRAME_HEADER_MIN_SIZE + BLOCK_HEADER_SIZE {
             return Err(Error::SrcSizeWrong);
         }
@@ -84,15 +101,7 @@ impl Decoder {
                 return Err(Error::SrcSizeWrong);
             }
         };
-        // Phase 5 compares with the id of the loaded dictionary.
-        if header.dict_id != 0 {
-            return Err(Error::DictionaryWrong);
-        }
-        if header.checksum {
-            self.checksum = XxHash64::with_seed(0);
-        }
-        self.literals.start_frame();
-        self.sequences.start_frame();
+        self.check_frame_header(&header)?;
 
         let mut input_pos = header_size;
         let mut written = 0;
@@ -108,6 +117,10 @@ impl Decoder {
             let block_written = match block.block_type {
                 BlockType::Compressed => {
                     let max = header.block_size_max as usize;
+                    let ext = self
+                        .dictionary
+                        .as_ref()
+                        .map_or(Ext::Ring(0), |d| Ext::Dict(d.padded()));
                     decompress_compressed_block(
                         &mut self.literals,
                         &mut self.sequences,
@@ -115,7 +128,10 @@ impl Decoder {
                         output,
                         written,
                         max,
-                        None,
+                        History {
+                            ext,
+                            streaming: false,
+                        },
                     )?
                 }
                 BlockType::Raw => {
@@ -149,9 +165,16 @@ impl Decoder {
     }
 }
 
+// What precedes the block's segment of the output, and whether it goes through the ring
+// of `decompress_stream`.
+#[derive(Clone, Copy)]
+pub(crate) struct History<'a> {
+    pub(crate) ext: Ext<'a>,
+    pub(crate) streaming: bool,
+}
+
 // `ZSTD_decompressBlock_internal`: the block's output goes to `output` from `start`,
-// earlier bytes are the history. `ring_ext_len` is `Some` when streaming, with the length
-// of the previous ring segment before the output start (see `Placement`).
+// earlier bytes (then `history.ext`) are the history.
 pub(crate) fn decompress_compressed_block(
     literals_state: &mut LiteralsState,
     sequences: &mut SequencesState,
@@ -159,7 +182,7 @@ pub(crate) fn decompress_compressed_block(
     output: &mut [u8],
     start: usize,
     block_size_max: usize,
-    ring_ext_len: Option<usize>,
+    history: History<'_>,
 ) -> Result<usize, Error> {
     if block.len() > block_size_max {
         return Err(Error::SrcSizeWrong);
@@ -170,15 +193,41 @@ pub(crate) fn decompress_compressed_block(
     if nb_seq > 0 && capacity == 0 {
         return Err(Error::DstSizeTooSmall);
     }
-    let ext_len = ring_ext_len.unwrap_or(0);
-    let limit = block_output_limit(capacity, &literals, block_size_max, ring_ext_len.is_some());
+    let limit = block_output_limit(capacity, &literals, block_size_max, history.streaming);
     let place = Placement {
         range: start..start + limit,
-        ext_len,
-        total_history: start + ext_len + capacity.min(block_size_max),
+        ext: history.ext,
+        total_history: start + history.ext.len() + capacity.min(block_size_max),
     };
     let block_end = sequences.execute_block(nb_seq, stream, &literals, output, &place)?;
     Ok(block_end - start)
+}
+
+impl Decoder {
+    // `ZSTD_decompressBegin_usingDDict`: the tables and offsets to start a frame from.
+    pub(crate) fn begin_frame(&mut self) {
+        self.literals.start_frame();
+        self.sequences.start_frame();
+        if self.dictionary.is_some() {
+            self.sequences.dictionary_is_cold = !self.sequences.dictionary_end_kept;
+            self.sequences.dictionary_end_kept = true;
+        } else {
+            // libzstd forgets the dictionary end, and keeps `ddictIsCold` as it is.
+            self.sequences.dictionary_end_kept = false;
+        }
+    }
+
+    // The dictionary ID check of `ZSTD_decodeFrameHeader`, and the checksum start.
+    pub(crate) fn check_frame_header(&mut self, header: &FrameHeader) -> Result<(), Error> {
+        let dictionary_id = self.dictionary.as_ref().map_or(0, Dictionary::id);
+        if header.dict_id != 0 && header.dict_id != dictionary_id {
+            return Err(Error::DictionaryWrong);
+        }
+        if header.checksum {
+            self.checksum = XxHash64::with_seed(0);
+        }
+        Ok(())
+    }
 }
 
 impl Default for Decoder {

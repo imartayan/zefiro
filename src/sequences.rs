@@ -13,6 +13,7 @@ use branches::prefetch_read_data;
 
 use crate::bits::{BitReader, Status};
 use crate::copy::{Kernel, Portable, ShortOffsets, WILDCOPY_OVERLENGTH, copy16};
+use crate::dict::Dictionary;
 use crate::error::Error;
 use crate::fse::*;
 use crate::literals::Literals;
@@ -54,10 +55,18 @@ pub(crate) struct SequencesState {
     repeat_offsets: [u32; 3],
     // Repeat mode is allowed (libzstd's `fseEntropy`).
     has_tables: bool,
+    dictionary: Option<Dictionary>,
+    // Per table (ll, of, ml): the table is the dictionary's, not copied into `tables`.
+    in_dictionary: [bool; 3],
+    // libzstd's `ddictIsCold`: the first block after a dictionary was (re)loaded takes the
+    // prefetching loop, and whether its `dictEnd` is still the dictionary's end, which a
+    // ring restart changes.
+    pub(crate) dictionary_is_cold: bool,
+    pub(crate) dictionary_end_kept: bool,
 }
 
 #[derive(Debug, Clone)]
-struct Tables {
+pub(crate) struct Tables {
     ll: FseTable<LL_CELLS>,
     of: FseTable<OF_CELLS>,
     ml: FseTable<ML_CELLS>,
@@ -81,13 +90,20 @@ struct Cursor {
     lit: *const u8,
 }
 
-// Where a block's output goes: `out[range]`, after the history `out[..range.start]`. In a
-// ring, `ext_len` bytes of the previous segment (the ones before `out[ext_len]`) precede
-// it. `total_history` is libzstd's `totalHistorySize`.
+// History before the segment being written: the previous segment of a ring, of which
+// `out[..len]` is the end, or a dictionary, followed by `WILDCOPY_OVERLENGTH` bytes of slack.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Ext<'a> {
+    Ring(usize),
+    Dict(&'a [u8]),
+}
+
+// Where a block's output goes: `out[range]`, after the history `out[..range.start]`, itself
+// after `ext`. `total_history` is libzstd's `totalHistorySize`.
 #[derive(Debug, Clone)]
-pub(crate) struct Placement {
+pub(crate) struct Placement<'a> {
     pub(crate) range: Range<usize>,
-    pub(crate) ext_len: usize,
+    pub(crate) ext: Ext<'a>,
     pub(crate) total_history: usize,
 }
 
@@ -97,7 +113,7 @@ struct Limits<'a> {
     out_base: *mut u8,
     out_len: usize,
     out_end: usize,
-    ext_len: usize,
+    ext: Ext<'a>,
     // `out_end` minus the wild copy slack.
     fast_end: *mut u8,
     literals: &'a [u8],
@@ -115,24 +131,110 @@ struct SequenceDecoder<'a> {
     repeat_offsets: [usize; 3],
 }
 
+impl Tables {
+    fn boxed() -> Box<Self> {
+        Box::new(Self {
+            ll: FseTable::EMPTY,
+            of: FseTable::EMPTY,
+            ml: FseTable::EMPTY,
+            custom: [true; 3],
+            short_offsets: false,
+        })
+    }
+
+    // The tables of a dictionary (`ZSTD_loadDEntropy`): offsets, match lengths, then literal
+    // lengths. Returns them and the bytes used.
+    pub(crate) fn read_dictionary(src: &[u8]) -> Result<(Box<Self>, usize), Error> {
+        let mut tables = Self::boxed();
+        let mut custom = true;
+        let spec = |max_symbol, max_log| TableSpec {
+            mode: MODE_COMPRESSED,
+            max_symbol,
+            max_log,
+        };
+        let mut used = build_table(
+            &mut tables.of,
+            &mut custom,
+            &OF_DEFAULT_TABLE,
+            spec(OF_MAX_SYMBOL, OF_TABLE_LOG_MAX),
+            (&OF_BASE, &OF_EXTRA_BITS),
+            src,
+            false,
+        )
+        .map_err(|_| Error::DictionaryCorrupted)?;
+        used += build_table(
+            &mut tables.ml,
+            &mut custom,
+            &ML_DEFAULT_TABLE,
+            spec(ML_MAX_SYMBOL, ML_TABLE_LOG_MAX),
+            (&ML_BASE, &ML_EXTRA_BITS),
+            &src[used..],
+            false,
+        )
+        .map_err(|_| Error::DictionaryCorrupted)?;
+        used += build_table(
+            &mut tables.ll,
+            &mut custom,
+            &LL_DEFAULT_TABLE,
+            spec(LL_MAX_SYMBOL, LL_TABLE_LOG_MAX),
+            (&LL_BASE, &LL_EXTRA_BITS),
+            &src[used..],
+            false,
+        )
+        .map_err(|_| Error::DictionaryCorrupted)?;
+        tables.short_offsets = short_offset_share(&tables.of) >= SHORT_OFFSET_SHARE_MIN;
+        Ok((tables, used))
+    }
+}
+
 impl SequencesState {
     pub(crate) fn new() -> Self {
         Self {
-            tables: Box::new(Tables {
-                ll: FseTable::EMPTY,
-                of: FseTable::EMPTY,
-                ml: FseTable::EMPTY,
-                custom: [true; 3],
-                short_offsets: false,
-            }),
+            tables: Tables::boxed(),
             repeat_offsets: INITIAL_REPEAT_OFFSETS,
             has_tables: false,
+            dictionary: None,
+            in_dictionary: [false; 3],
+            dictionary_is_cold: false,
+            dictionary_end_kept: false,
         }
     }
 
+    pub(crate) fn set_dictionary(&mut self, dictionary: Option<&Dictionary>) {
+        self.dictionary = dictionary.cloned();
+    }
+
+    // A frame starts from the dictionary's tables and repeat offsets, if it has any.
     pub(crate) fn start_frame(&mut self) {
-        self.repeat_offsets = INITIAL_REPEAT_OFFSETS;
-        self.has_tables = false;
+        let entropy = self.dictionary.as_ref().and_then(Dictionary::entropy);
+        self.has_tables = entropy.is_some();
+        self.repeat_offsets = entropy.map_or(INITIAL_REPEAT_OFFSETS, |e| e.repeat_offsets);
+        self.in_dictionary = [entropy.is_some(); 3];
+        if entropy.is_some() {
+            self.tables.custom = [true; 3];
+        }
+    }
+
+    // Copies the dictionary's tables that blocks still use as they are.
+    fn copy_dictionary_tables(&mut self) {
+        let entropy = self
+            .dictionary
+            .as_ref()
+            .and_then(Dictionary::entropy)
+            .unwrap();
+        let (tables, dictionary) = (&mut *self.tables, &entropy.sequences);
+        let [ll, of, ml] = self.in_dictionary;
+        if ll {
+            tables.ll.copy_from(&dictionary.ll);
+        }
+        if of {
+            tables.of.copy_from(&dictionary.of);
+            tables.short_offsets = dictionary.short_offsets;
+        }
+        if ml {
+            tables.ml.copy_from(&dictionary.ml);
+        }
+        self.in_dictionary = [false; 3];
     }
 
     // `ZSTD_decodeSeqHeaders`: reads the sequence count and builds the tables.
@@ -165,6 +267,10 @@ impl SequencesState {
             return Err(Error::CorruptionDetected);
         }
         let has_tables = self.has_tables;
+        let mode_of = [modes >> 6, (modes >> 4) & 3, (modes >> 2) & 3];
+        for (in_dictionary, mode) in self.in_dictionary.iter_mut().zip(mode_of) {
+            *in_dictionary &= mode == MODE_REPEAT;
+        }
         let tables = &mut *self.tables;
         let [ll_custom, of_custom, ml_custom] = &mut tables.custom;
         let used = build_table(
@@ -211,6 +317,9 @@ impl SequencesState {
             rest,
             has_tables,
         )?;
+        if self.in_dictionary != [false; 3] && self.in_dictionary != [true; 3] {
+            self.copy_dictionary_tables();
+        }
         Ok((nb_seq, &rest[used..]))
     }
 
@@ -222,34 +331,46 @@ impl SequencesState {
         stream: &[u8],
         literals: &Literals<'_>,
         out: &mut [u8],
-        place: &Placement,
+        place: &Placement<'_>,
     ) -> Result<usize, Error> {
         let literal_bytes = literals.bytes();
         let (mut op, mut literal_pos) = (place.range.start, 0);
+        let cold = core::mem::take(&mut self.dictionary_is_cold);
         if nb_seq > 0 {
             self.has_tables = true;
-            let prefetch = nb_seq > LOOKAHEAD
-                && place.total_history > PREFETCH_HISTORY_MIN
-                && long_offset_share(&self.tables.of) >= LONG_OFFSET_SHARE_MIN;
+            let tables: &Tables = match &self.dictionary {
+                Some(dictionary) if self.in_dictionary == [true; 3] => {
+                    &dictionary.entropy().unwrap().sequences
+                }
+                _ => &self.tables,
+            };
+            let prefetch = cold
+                || nb_seq > LOOKAHEAD
+                    && place.total_history > PREFETCH_HISTORY_MIN
+                    && long_offset_share(&tables.of) >= LONG_OFFSET_SHARE_MIN;
             // Blocks reaching the previous ring segment always use the portable kernel.
-            (op, literal_pos, self.repeat_offsets) = if place.ext_len > 0 {
+            (op, literal_pos, self.repeat_offsets) = if place.ext.len() > 0 {
                 if prefetch {
                     self.run_sequences::<Portable, true, true>(
-                        nb_seq, stream, literals, out, place,
+                        tables, nb_seq, stream, literals, out, place,
                     )?
                 } else {
                     self.run_sequences::<Portable, false, true>(
-                        nb_seq, stream, literals, out, place,
+                        tables, nb_seq, stream, literals, out, place,
                     )?
                 }
             } else if prefetch {
-                self.run_sequences::<Portable, true, false>(nb_seq, stream, literals, out, place)?
-            } else if self.tables.short_offsets {
+                self.run_sequences::<Portable, true, false>(
+                    tables, nb_seq, stream, literals, out, place,
+                )?
+            } else if tables.short_offsets {
                 self.run_sequences::<ShortOffsets, false, false>(
-                    nb_seq, stream, literals, out, place,
+                    tables, nb_seq, stream, literals, out, place,
                 )?
             } else {
-                self.run_sequences::<Portable, false, false>(nb_seq, stream, literals, out, place)?
+                self.run_sequences::<Portable, false, false>(
+                    tables, nb_seq, stream, literals, out, place,
+                )?
             };
         }
         let last_literals = &literal_bytes[literal_pos..];
@@ -268,22 +389,23 @@ impl SequencesState {
     #[inline(never)]
     fn run_sequences<K: Kernel, const PREFETCH: bool, const EXT: bool>(
         &self,
+        tables: &Tables,
         nb_seq: usize,
         stream: &[u8],
         literals: &Literals<'_>,
         out: &mut [u8],
-        place: &Placement,
+        place: &Placement<'_>,
     ) -> Result<(usize, usize, [u32; 3]), Error> {
         let range = &place.range;
         // The unsafe execution below relies on these.
         assert!(range.start <= range.end && range.end <= out.len());
         assert!(literals.padded.len() >= literals.len + WILDCOPY_OVERLENGTH);
-        let mut decoder = SequenceDecoder::new(stream, &self.tables, self.repeat_offsets)?;
+        let mut decoder = SequenceDecoder::new(stream, tables, self.repeat_offsets)?;
         let limits = Limits {
             out_base: out.as_mut_ptr(),
             out_len: out.len(),
             out_end: range.end,
-            ext_len: place.ext_len,
+            ext: place.ext,
             fast_end: out
                 .as_mut_ptr()
                 .wrapping_add(range.end.saturating_sub(WILDCOPY_OVERLENGTH)),
@@ -579,9 +701,9 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
     }
     // The segment start bounds the history, except in a ring (`EXT`).
     if offset > literals_end.addr() - limits.out_base.addr() {
-        // A match starting in the previous segment of a ring is rare: the exact path copies it.
         return if EXT {
-            exec_sequence_end(sequence, cursor, limits)
+            // SAFETY: the checks above are the ones `exec_sequence_ext` needs.
+            unsafe { exec_sequence_ext(sequence, cursor, limits) }
         } else {
             Err(Error::CorruptionDetected)
         };
@@ -600,6 +722,61 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
         kernel.copy_match(op, offset, match_length);
         Ok(Cursor {
             op: op.add(match_length),
+            lit: lit.add(literal_length),
+        })
+    }
+}
+
+// `exec_sequence` for a match starting before the segment, out of line with the cursor by
+// value like `exec_sequence_end`, so that the loop keeps its shape. A match in a dictionary is
+// common: wild copy. A match in the previous segment of a ring is rare: the exact path.
+// Safety: that of `exec_sequence`, after its checks, and `offset > literals_end - out_base`.
+#[cold]
+#[inline(never)]
+unsafe fn exec_sequence_ext(
+    sequence: Sequence,
+    cursor: Cursor,
+    limits: &Limits<'_>,
+) -> Result<Cursor, Error> {
+    let Ext::Dict(padded) = limits.ext else {
+        return exec_sequence_end(sequence, cursor, limits);
+    };
+    let Sequence {
+        literal_length,
+        match_length,
+        offset,
+    } = sequence;
+    let Cursor { op, lit } = cursor;
+    let literals_end = op.wrapping_add(literal_length);
+    let match_start = literals_end.addr() - limits.out_base.addr();
+    let dictionary_len = padded.len() - WILDCOPY_OVERLENGTH;
+    if offset > match_start + dictionary_len {
+        return Err(Error::CorruptionDetected);
+    }
+    let from_dictionary = match_length.min(offset - match_start);
+    let source = dictionary_len + match_start - offset;
+    let kernel = Portable;
+    // SAFETY: literals and slack as in `exec_sequence`; the first `from_dictionary` bytes of the
+    // match are the dictionary from `source` on, whose slack takes the overshoot of the wild
+    // copy, the rest starts at `out_base`, `match_start + from_dictionary` bytes before its
+    // destination (distinct allocations).
+    unsafe {
+        copy16(op, lit);
+        copy16(op.add(16), lit.add(16));
+        if literal_length > 32 {
+            kernel.wildcopy(op.add(32), lit.add(32), literal_length - 32);
+        }
+        kernel.wildcopy(literals_end, padded.as_ptr().add(source), from_dictionary);
+        if match_length > from_dictionary {
+            let rest = literals_end.add(from_dictionary);
+            kernel.copy_match(
+                rest,
+                match_start + from_dictionary,
+                match_length - from_dictionary,
+            );
+        }
+        Ok(Cursor {
+            op: literals_end.add(match_length),
             lit: lit.add(literal_length),
         })
     }
@@ -625,7 +802,7 @@ fn exec_sequence_end(
         sequence,
         limits.literals,
         &mut literal_pos,
-        limits.ext_len,
+        limits.ext,
     )?;
     Ok(Cursor {
         op: limits.out_base.wrapping_add(op),
@@ -642,7 +819,7 @@ fn exec_sequence_exact(
     sequence: Sequence,
     literals: &[u8],
     literal_pos: &mut usize,
-    ext_len: usize,
+    ext: Ext<'_>,
 ) -> Result<usize, Error> {
     let Sequence {
         literal_length,
@@ -658,20 +835,20 @@ fn exec_sequence_exact(
     let literals_end = op + literal_length;
     out[op..literals_end].copy_from_slice(&literals[*literal_pos..*literal_pos + literal_length]);
     *literal_pos += literal_length;
-    copy_match(out, literals_end, offset, match_length, ext_len)?;
+    copy_match(out, literals_end, offset, match_length, ext)?;
     Ok(literals_end + match_length)
 }
 
-// Copies a match to `out[dest..]`. The history is `out[..dest]`, preceded by the previous
-// segment of a ring, which ends at `out[ext_len]` (`ext_len` 0 outside rings). A match
+// Copies a match to `out[dest..]`. The history is `out[..dest]`, preceded by `ext`. A match
 // can span both, and overlap its own output.
 fn copy_match(
     out: &mut [u8],
     dest: usize,
     offset: usize,
     match_length: usize,
-    ext_len: usize,
+    ext: Ext<'_>,
 ) -> Result<(), Error> {
+    let ext_len = ext.len();
     if offset > dest + ext_len {
         return Err(Error::CorruptionDetected);
     }
@@ -679,7 +856,13 @@ fn copy_match(
     if offset > dest {
         let from_previous = remaining.min(offset - dest);
         let start = ext_len - (offset - dest);
-        out.copy_within(start..start + from_previous, dest);
+        match ext {
+            Ext::Ring(_) => out.copy_within(start..start + from_previous, dest),
+            Ext::Dict(padded) => {
+                out[dest..dest + from_previous]
+                    .copy_from_slice(&padded[start..start + from_previous]);
+            }
+        }
         dest += from_previous;
         remaining -= from_previous;
     } else {
@@ -695,6 +878,15 @@ fn copy_match(
         done += chunk;
     }
     Ok(())
+}
+
+impl Ext<'_> {
+    pub(crate) fn len(self) -> usize {
+        match self {
+            Self::Ring(len) => len,
+            Self::Dict(padded) => padded.len() - WILDCOPY_OVERLENGTH,
+        }
+    }
 }
 
 #[cfg(test)]

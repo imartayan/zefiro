@@ -535,17 +535,38 @@ fn fill_weight(
     first: Option<u8>,
 ) {
     let length = 1 << (table_log - nb_bits);
-    for (index, &symbol) in symbols.iter().enumerate() {
+    let cell = |symbol: u8| {
         let (sequence, count) = match first {
             None => (u16::from(symbol), 1),
             Some(first) => (u16::from(first) + (u16::from(symbol) << 8), 2),
         };
-        let elt = EltX2 {
+        EltX2 {
             sequence,
             nb_bits: nb_bits as u8,
             length: count,
-        };
-        table[index * length..(index + 1) * length].fill(elt);
+        }
+    };
+    // Short runs are fixed-size arrays, stored as one wide write each.
+    fn short_runs<const LENGTH: usize>(
+        table: &mut [EltX2],
+        symbols: &[u8],
+        cell: impl Fn(u8) -> EltX2,
+    ) {
+        let runs = table.as_chunks_mut::<LENGTH>().0.iter_mut();
+        for (run, &symbol) in runs.zip(symbols) {
+            *run = [cell(symbol); LENGTH];
+        }
+    }
+    match length {
+        1 => short_runs::<1>(table, symbols, cell),
+        2 => short_runs::<2>(table, symbols, cell),
+        4 => short_runs::<4>(table, symbols, cell),
+        8 => short_runs::<8>(table, symbols, cell),
+        _ => {
+            for (run, &symbol) in table.chunks_exact_mut(length).zip(symbols) {
+                run.fill(cell(symbol));
+            }
+        }
     }
 }
 

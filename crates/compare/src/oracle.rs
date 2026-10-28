@@ -3,6 +3,8 @@ use std::fmt;
 
 use zstd_sys::*;
 
+use crate::{Step, run_stream};
+
 /// Error codes the decoder can return, plus harness-only ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
@@ -124,54 +126,53 @@ impl Libzstd {
     ) -> Outcome {
         assert!(in_chunk > 0 && out_chunk > 0);
         self.reset_session();
-        let mut output = Vec::new();
-        let mut buffer = vec![0u8; out_chunk];
-        let mut last_hint = 0;
-        let mut pos = 0;
-        while pos < input.len() {
-            let end = input.len().min(pos + in_chunk);
-            let mut in_buf = ZSTD_inBuffer {
-                src: input.as_ptr().cast::<c_void>(),
-                size: end,
-                pos,
-            };
-            loop {
-                let mut out_buf = ZSTD_outBuffer {
-                    dst: buffer.as_mut_ptr().cast::<c_void>(),
-                    size: out_chunk,
-                    pos: 0,
-                };
-                let consumed_before = in_buf.pos;
-                // SAFETY: buffers describe valid slices and pos <= size.
-                let hint =
-                    unsafe { ZSTD_decompressStream(self.dctx, &raw mut out_buf, &raw mut in_buf) };
-                if is_error(hint) {
-                    return Outcome::Err(Code::from_result(hint));
-                }
-                // A call that does nothing only probes for pending output: its
-                // hint (e.g. "next frame header") says nothing about this frame.
-                if in_buf.pos == consumed_before && out_buf.pos == 0 {
-                    assert_eq!(in_buf.pos, end, "libzstd made no progress");
-                    break;
-                }
-                last_hint = hint;
-                output.extend_from_slice(&buffer[..out_buf.pos]);
-                if in_buf.pos == end && out_buf.pos < out_chunk {
-                    break;
-                }
-            }
-            pos = end;
-        }
-        if last_hint != 0 {
-            return Outcome::Err(Code::Truncated);
-        }
-        Outcome::Ok {
-            consumed: input.len(),
-            output,
-        }
+        run_stream(
+            |i, o| self.stream_step(i, o),
+            input,
+            &[in_chunk],
+            &[out_chunk],
+        )
+        .outcome
     }
 
-    fn reset_session(&mut self) {
+    /// One `ZSTD_decompressStream` call on the whole of `input` and `output`.
+    pub fn stream_step(&mut self, input: &[u8], output: &mut [u8]) -> Result<Step, Code> {
+        let mut in_buf = ZSTD_inBuffer {
+            src: input.as_ptr().cast::<c_void>(),
+            size: input.len(),
+            pos: 0,
+        };
+        let mut out_buf = ZSTD_outBuffer {
+            dst: output.as_mut_ptr().cast::<c_void>(),
+            size: output.len(),
+            pos: 0,
+        };
+        // SAFETY: buffers describe valid slices and pos <= size.
+        let hint = unsafe { ZSTD_decompressStream(self.dctx, &raw mut out_buf, &raw mut in_buf) };
+        if is_error(hint) {
+            return Err(Code::from_result(hint));
+        }
+        Ok(Step {
+            consumed: in_buf.pos,
+            written: out_buf.pos,
+            done: hint == 0,
+        })
+    }
+
+    /// `ZSTD_d_windowLogMax` (0: default).
+    pub fn set_window_log_max(&mut self, log: u32) {
+        // SAFETY: dctx is live.
+        let result = unsafe {
+            ZSTD_DCtx_setParameter(
+                self.dctx,
+                ZSTD_dParameter::ZSTD_d_windowLogMax,
+                log as std::ffi::c_int,
+            )
+        };
+        assert!(!is_error(result), "window log {log} out of bounds");
+    }
+
+    pub(crate) fn reset_session(&mut self) {
         // SAFETY: dctx is live.
         let result =
             unsafe { ZSTD_DCtx_reset(self.dctx, ZSTD_ResetDirective::ZSTD_reset_session_only) };

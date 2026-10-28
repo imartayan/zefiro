@@ -14,7 +14,7 @@ use std::{fs, process};
 use rust_zstd_decoder::Decoder;
 
 use crate::corpus::corpus_dir;
-use crate::{Libzstd, Params, Rng, compress};
+use crate::{Libzstd, Params, Rng, Step, compress};
 
 const CORPUS_FILES: &[&str] = &["elf_8m", "rust_src_8m", "silesia-small.tar", "words_1m"];
 const LEVELS: &[i32] = &[1, 3, 9, 19, 22];
@@ -27,6 +27,8 @@ const LONG_LEVEL: i32 = 19;
 // `long27` source: the corpus, then `LONG_COPIED` bytes of pieces of it copied from random places.
 const LONG_COPIED: usize = 24 << 20;
 const LONG_PIECE: Range<usize> = 256..4096;
+// Pieces of input and output of the streaming impls (`ZSTD_DStreamInSize` and `OutSize`).
+const STREAM_CHUNK: usize = 128 << 10;
 const DEFAULT_ROUNDS: usize = 10;
 const MIB: f64 = (1 << 20) as f64;
 const USAGE: &str = "usage: bench [--rounds N] [--case SUBSTRING[,..]] [--impl NAME[,..]] \
@@ -74,6 +76,10 @@ struct LibzstdImpl {
     dctx: Libzstd,
     buffer: Vec<u8>,
 }
+
+/// `Ours` and `LibzstdImpl` through their streaming calls.
+struct OursStream(Ours);
+struct LibzstdStream(LibzstdImpl);
 
 impl Case {
     fn new(name: String, source: Arc<Vec<u8>>, frames: Vec<(Vec<u8>, Range<usize>)>) -> Self {
@@ -183,11 +189,77 @@ impl Impl for LibzstdImpl {
     }
 }
 
+impl Impl for OursStream {
+    fn name(&self) -> &'static str {
+        "ours-stream"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        let Ours { decoder, buffer } = &mut self.0;
+        grow(buffer, size);
+        let written = stream_frame(input, &mut buffer[..size], |input, output| {
+            let progress = decoder
+                .decompress_stream(input, output)
+                .expect("ours failed");
+            Step {
+                consumed: progress.consumed,
+                written: progress.written,
+                done: progress.frame_done,
+            }
+        });
+        &buffer[..written]
+    }
+}
+
+impl Impl for LibzstdStream {
+    fn name(&self) -> &'static str {
+        "libzstd-stream"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        let LibzstdImpl { dctx, buffer } = &mut self.0;
+        grow(buffer, size);
+        let written = stream_frame(input, &mut buffer[..size], |input, output| {
+            dctx.stream_step(input, output).expect("libzstd failed")
+        });
+        &buffer[..written]
+    }
+}
+
+/// Decodes one frame the way `zstd -d` reads a file: `STREAM_CHUNK` bytes of input and
+/// room for `STREAM_CHUNK` bytes of output per call, the output going straight into place.
+fn stream_frame(
+    input: &[u8],
+    output: &mut [u8],
+    mut step: impl FnMut(&[u8], &mut [u8]) -> Step,
+) -> usize {
+    let (mut consumed, mut written) = (0, 0);
+    loop {
+        let input_end = input.len().min(consumed + STREAM_CHUNK);
+        let output_end = output.len().min(written + STREAM_CHUNK);
+        let result = step(
+            &input[consumed..input_end],
+            &mut output[written..output_end],
+        );
+        consumed += result.consumed;
+        written += result.written;
+        assert!(result.consumed + result.written > 0, "no progress");
+        if result.done {
+            return written;
+        }
+    }
+}
+
 /// Runs the benchmark described by the command line; `extra_impls` come after
-/// `ours` and `libzstd`.
+/// `ours`, `libzstd` and their streaming versions.
 pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
     let args = Args::parse();
-    let mut impls: Vec<Box<dyn Impl>> = vec![Box::new(Ours::new()), Box::new(LibzstdImpl::new())];
+    let mut impls: Vec<Box<dyn Impl>> = vec![
+        Box::new(Ours::new()),
+        Box::new(LibzstdImpl::new()),
+        Box::new(OursStream(Ours::new())),
+        Box::new(LibzstdStream(LibzstdImpl::new())),
+    ];
     impls.extend(extra_impls);
     for name in &args.impls {
         if !impls.iter().any(|imp| imp.name() == name) {

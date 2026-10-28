@@ -81,12 +81,23 @@ struct Cursor {
     lit: *const u8,
 }
 
+// Where a block's output goes: `out[range]`, after the history `out[..range.start]`. In a
+// ring, `ext_len` bytes of the previous segment (the ones before `out[ext_len]`) precede
+// it. `total_history` is libzstd's `totalHistorySize`.
+#[derive(Debug, Clone)]
+pub(crate) struct Placement {
+    pub(crate) range: Range<usize>,
+    pub(crate) ext_len: usize,
+    pub(crate) total_history: usize,
+}
+
 // Bounds of a block's execution (`ZSTD_execSequence`'s `oend`, `oend_w`, `litLimit`).
 #[derive(Clone, Copy)]
 struct Limits<'a> {
     out_base: *mut u8,
     out_len: usize,
     out_end: usize,
+    ext_len: usize,
     // `out_end` minus the wild copy slack.
     fast_end: *mut u8,
     literals: &'a [u8],
@@ -204,40 +215,45 @@ impl SequencesState {
     }
 
     // Decodes and executes the block's sequences from `stream`, then copies the remaining
-    // literals. The block starts at `range.start` in the frame's output `out`;
-    // `total_history` is libzstd's `totalHistorySize`. Returns the position after it.
+    // literals. Returns the position after the block's output.
     pub(crate) fn execute_block(
         &mut self,
         nb_seq: usize,
         stream: &[u8],
         literals: &Literals<'_>,
         out: &mut [u8],
-        range: Range<usize>,
-        total_history: usize,
+        place: &Placement,
     ) -> Result<usize, Error> {
         let literal_bytes = literals.bytes();
-        let (mut op, mut literal_pos) = (range.start, 0);
+        let (mut op, mut literal_pos) = (place.range.start, 0);
         if nb_seq > 0 {
             self.has_tables = true;
             let prefetch = nb_seq > LOOKAHEAD
-                && total_history > PREFETCH_HISTORY_MIN
+                && place.total_history > PREFETCH_HISTORY_MIN
                 && long_offset_share(&self.tables.of) >= LONG_OFFSET_SHARE_MIN;
-            (op, literal_pos, self.repeat_offsets) = if prefetch {
-                self.run_sequences::<Portable, true>(nb_seq, stream, literals, out, range.clone())?
+            // Blocks reaching the previous ring segment always use the portable kernel.
+            (op, literal_pos, self.repeat_offsets) = if place.ext_len > 0 {
+                if prefetch {
+                    self.run_sequences::<Portable, true, true>(
+                        nb_seq, stream, literals, out, place,
+                    )?
+                } else {
+                    self.run_sequences::<Portable, false, true>(
+                        nb_seq, stream, literals, out, place,
+                    )?
+                }
+            } else if prefetch {
+                self.run_sequences::<Portable, true, false>(nb_seq, stream, literals, out, place)?
             } else if self.tables.short_offsets {
-                self.run_sequences::<ShortOffsets, false>(
-                    nb_seq,
-                    stream,
-                    literals,
-                    out,
-                    range.clone(),
+                self.run_sequences::<ShortOffsets, false, false>(
+                    nb_seq, stream, literals, out, place,
                 )?
             } else {
-                self.run_sequences::<Portable, false>(nb_seq, stream, literals, out, range.clone())?
+                self.run_sequences::<Portable, false, false>(nb_seq, stream, literals, out, place)?
             };
         }
         let last_literals = &literal_bytes[literal_pos..];
-        if last_literals.len() > range.end - op {
+        if last_literals.len() > place.range.end - op {
             return Err(Error::DstSizeTooSmall);
         }
         out[op..op + last_literals.len()].copy_from_slice(last_literals);
@@ -246,17 +262,19 @@ impl SequencesState {
 
     // The block's sequence loop: decodes one sequence ahead of the one executed, or with
     // `PREFETCH` `LOOKAHEAD` ahead (`ZSTD_decompressSequencesLong`), touching the match
-    // sources and checking the stream end before the last ones run.
-    // Returns the output and literals positions and the repeat offsets after it.
+    // sources and checking the stream end before the last ones run. With `EXT`, matches may
+    // reach the previous ring segment. Returns the output and literals positions and the
+    // repeat offsets after it.
     #[inline(never)]
-    fn run_sequences<K: Kernel, const PREFETCH: bool>(
+    fn run_sequences<K: Kernel, const PREFETCH: bool, const EXT: bool>(
         &self,
         nb_seq: usize,
         stream: &[u8],
         literals: &Literals<'_>,
         out: &mut [u8],
-        range: Range<usize>,
+        place: &Placement,
     ) -> Result<(usize, usize, [u32; 3]), Error> {
+        let range = &place.range;
         // The unsafe execution below relies on these.
         assert!(range.start <= range.end && range.end <= out.len());
         assert!(literals.padded.len() >= literals.len + WILDCOPY_OVERLENGTH);
@@ -265,6 +283,7 @@ impl SequencesState {
             out_base: out.as_mut_ptr(),
             out_len: out.len(),
             out_end: range.end,
+            ext_len: place.ext_len,
             fast_end: out
                 .as_mut_ptr()
                 .wrapping_add(range.end.saturating_sub(WILDCOPY_OVERLENGTH)),
@@ -289,7 +308,7 @@ impl SequencesState {
                 let sequence = decoder.next(index == nb_seq - 1);
                 let oldest = queue[index % LOOKAHEAD];
                 // SAFETY: `limits` and `cursor` describe `out` and `literals`, as `exec_sequence` needs.
-                cursor = unsafe { exec_sequence(kernel, oldest, cursor, &limits) }?;
+                cursor = unsafe { exec_sequence::<K, EXT>(kernel, oldest, cursor, &limits) }?;
                 position = prefetch_match(position, sequence, &limits);
                 queue[index % LOOKAHEAD] = sequence;
             }
@@ -298,19 +317,20 @@ impl SequencesState {
             }
             for index in nb_seq - ahead..nb_seq {
                 // SAFETY: as above.
-                cursor =
-                    unsafe { exec_sequence(kernel, queue[index % LOOKAHEAD], cursor, &limits) }?;
+                cursor = unsafe {
+                    exec_sequence::<K, EXT>(kernel, queue[index % LOOKAHEAD], cursor, &limits)
+                }?;
             }
         } else {
             let mut current = decoder.next(nb_seq == 1);
             for remaining in (1..nb_seq).rev() {
                 let following = decoder.next(remaining == 1);
                 // SAFETY: `limits` and `cursor` describe `out` and `literals`, as `exec_sequence` needs.
-                cursor = unsafe { exec_sequence(kernel, current, cursor, &limits) }?;
+                cursor = unsafe { exec_sequence::<K, EXT>(kernel, current, cursor, &limits) }?;
                 current = following;
             }
             // SAFETY: as above.
-            cursor = unsafe { exec_sequence(kernel, current, cursor, &limits) }?;
+            cursor = unsafe { exec_sequence::<K, EXT>(kernel, current, cursor, &limits) }?;
             if !decoder.bits.end_of_stream() {
                 return Err(Error::CorruptionDetected);
             }
@@ -356,37 +376,9 @@ impl<'a> SequenceDecoder<'a> {
             tables.of.entries[self.state_of],
         );
         let bits = &mut self.bits;
-        // Constant indices only: dynamic ones would keep the array in memory.
-        let [rep0, rep1, rep2] = self.repeat_offsets;
-        let offset = if of.nb_additional_bits > 1 {
-            let offset = of.base_value as usize
-                + bits.read_bits_fast(u32::from(of.nb_additional_bits)) as usize;
-            self.repeat_offsets = [offset, rep0, rep1];
-            offset
-        } else {
-            let ll_is_zero = ll.base_value == 0;
-            if of.nb_additional_bits == 0 {
-                if ll_is_zero {
-                    self.repeat_offsets = [rep1, rep0, rep2];
-                }
-                self.repeat_offsets[0]
-            } else {
-                // Offset codes 1 to 3: second or third repeat offset, or the first minus one.
-                let code = of.base_value as usize
-                    + usize::from(ll_is_zero)
-                    + bits.read_bits_fast(1) as usize;
-                let offset = match code {
-                    1 => rep1,
-                    2 => rep2,
-                    _ => rep0.wrapping_sub(1),
-                };
-                // A zero offset is invalid: -1 fails the bounds check at execution.
-                let offset = if offset == 0 { usize::MAX } else { offset };
-                self.repeat_offsets = [offset, rep0, if code == 1 { rep2 } else { rep1 }];
-                offset
-            }
-        };
-
+        // Every offset code consumes exactly its extra bits (none: garbage, unused): read them
+        // first so that the offset logic, a coin flip on some data, follows the state update.
+        let offset_extra = bits.read_bits_fast(u32::from(of.nb_additional_bits)) as usize;
         let mut match_length = ml.base_value as usize;
         if ml.nb_additional_bits > 0 {
             match_length += bits.read_bits_fast(u32::from(ml.nb_additional_bits)) as usize;
@@ -401,17 +393,46 @@ impl<'a> SequenceDecoder<'a> {
         }
 
         if !last {
-            self.state_ll =
-                usize::from(ll.next_state) + bits.read_bits(u32::from(ll.nb_bits)) as usize;
-            self.state_ml =
-                usize::from(ml.next_state) + bits.read_bits(u32::from(ml.nb_bits)) as usize;
-            self.state_of =
-                usize::from(of.next_state) + bits.read_bits(u32::from(of.nb_bits)) as usize;
+            let [ll_bits, ml_bits, of_bits] = bits.read_bits_x3([
+                u32::from(ll.nb_bits),
+                u32::from(ml.nb_bits),
+                u32::from(of.nb_bits),
+            ]);
+            self.state_ll = usize::from(ll.next_state) + ll_bits as usize;
+            self.state_ml = usize::from(ml.next_state) + ml_bits as usize;
+            self.state_of = usize::from(of.next_state) + of_bits as usize;
             // SAFETY: at most 7 bits were consumed after the previous reload, and 63 since.
             if unsafe { bits.reload_fast() } == Status::Overflow {
                 bits.reload();
             }
         }
+        // Constant indices only: dynamic ones would keep the array in memory.
+        let [rep0, rep1, rep2] = self.repeat_offsets;
+        let offset = if of.nb_additional_bits > 1 {
+            let offset = of.base_value as usize + offset_extra;
+            self.repeat_offsets = [offset, rep0, rep1];
+            offset
+        } else {
+            let ll_is_zero = ll.base_value == 0;
+            if of.nb_additional_bits == 0 {
+                if ll_is_zero {
+                    self.repeat_offsets = [rep1, rep0, rep2];
+                }
+                self.repeat_offsets[0]
+            } else {
+                // Offset codes 1 to 3: second or third repeat offset, or the first minus one.
+                let code = of.base_value as usize + usize::from(ll_is_zero) + offset_extra;
+                let offset = match code {
+                    1 => rep1,
+                    2 => rep2,
+                    _ => rep0.wrapping_sub(1),
+                };
+                // A zero offset is invalid: -1 fails the bounds check at execution.
+                let offset = if offset == 0 { usize::MAX } else { offset };
+                self.repeat_offsets = [offset, rep0, if code == 1 { rep2 } else { rep1 }];
+                offset
+            }
+        };
         Sequence {
             literal_length,
             match_length,
@@ -421,15 +442,17 @@ impl<'a> SequenceDecoder<'a> {
 }
 
 // Where libzstd stops a block's output (4.2-4): literals stored in the output past
-// the block cap it at `block_size_max` plus the slack, other placements leave the
-// capacity. The error when a split block catches up with its literals is not modelled.
+// the block (never when streaming) cap it at `block_size_max` plus the slack, other
+// placements leave the capacity. The error when a split block catches up with its
+// literals is not modelled.
 pub(crate) fn block_output_limit(
     capacity: usize,
     literals: &Literals<'_>,
     block_size_max: usize,
+    streaming: bool,
 ) -> usize {
     let room_after_block = block_size_max + literals.len + 2 * WILDCOPY_OVERLENGTH;
-    let in_output = !literals.in_input && capacity > room_after_block;
+    let in_output = !streaming && !literals.in_input && capacity > room_after_block;
     if in_output {
         block_size_max + WILDCOPY_OVERLENGTH
     } else {
@@ -531,7 +554,7 @@ fn build_table<const N: usize>(
 // Safety: `limits` describes the output and literals (`lit_base` followed by
 // `WILDCOPY_OVERLENGTH` readable bytes), the cursor is inside them.
 #[inline(always)]
-unsafe fn exec_sequence<K: Kernel>(
+unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
     kernel: K,
     sequence: Sequence,
     cursor: Cursor,
@@ -554,9 +577,14 @@ unsafe fn exec_sequence<K: Kernel>(
     if literal_length > literals_left || literals_end.wrapping_add(match_length) > limits.fast_end {
         return exec_sequence_end(sequence, cursor, limits);
     }
-    // The frame's output start bounds the history (one-shot, no dictionary).
+    // The segment start bounds the history, except in a ring (`EXT`).
     if offset > literals_end.addr() - limits.out_base.addr() {
-        return Err(Error::CorruptionDetected);
+        // A match starting in the previous segment of a ring is rare: the exact path copies it.
+        return if EXT {
+            exec_sequence_end(sequence, cursor, limits)
+        } else {
+            Err(Error::CorruptionDetected)
+        };
     }
     // SAFETY: the literals end `literal_length <= literals_left` bytes on, the slack covers
     // the overshoot; the match end is `32` bytes before the output end, so is the overshoot of
@@ -597,6 +625,7 @@ fn exec_sequence_end(
         sequence,
         limits.literals,
         &mut literal_pos,
+        limits.ext_len,
     )?;
     Ok(Cursor {
         op: limits.out_base.wrapping_add(op),
@@ -613,6 +642,7 @@ fn exec_sequence_exact(
     sequence: Sequence,
     literals: &[u8],
     literal_pos: &mut usize,
+    ext_len: usize,
 ) -> Result<usize, Error> {
     let Sequence {
         literal_length,
@@ -628,20 +658,43 @@ fn exec_sequence_exact(
     let literals_end = op + literal_length;
     out[op..literals_end].copy_from_slice(&literals[*literal_pos..*literal_pos + literal_length]);
     *literal_pos += literal_length;
-    // The frame's output start bounds the history (one-shot, no dictionary).
-    if offset > literals_end {
+    copy_match(out, literals_end, offset, match_length, ext_len)?;
+    Ok(literals_end + match_length)
+}
+
+// Copies a match to `out[dest..]`. The history is `out[..dest]`, preceded by the previous
+// segment of a ring, which ends at `out[ext_len]` (`ext_len` 0 outside rings). A match
+// can span both, and overlap its own output.
+fn copy_match(
+    out: &mut [u8],
+    dest: usize,
+    offset: usize,
+    match_length: usize,
+    ext_len: usize,
+) -> Result<(), Error> {
+    if offset > dest + ext_len {
         return Err(Error::CorruptionDetected);
     }
-    // Overlapping match: the pattern of `offset` bytes repeats, so each pass can
-    // copy everything produced so far.
-    let source = literals_end - offset;
+    let (mut dest, mut remaining, mut source) = (dest, match_length, 0);
+    if offset > dest {
+        let from_previous = remaining.min(offset - dest);
+        let start = ext_len - (offset - dest);
+        out.copy_within(start..start + from_previous, dest);
+        dest += from_previous;
+        remaining -= from_previous;
+    } else {
+        source = dest - offset;
+    }
+    // The pattern of `dest - source` bytes repeats, so each pass can copy everything
+    // produced so far.
+    let gap = dest - source;
     let mut done = 0;
-    while done < match_length {
-        let chunk = (offset + done).min(match_length - done);
-        out.copy_within(source..source + chunk, literals_end + done);
+    while done < remaining {
+        let chunk = (gap + done).min(remaining - done);
+        out.copy_within(source..source + chunk, dest + done);
         done += chunk;
     }
-    Ok(literals_end + match_length)
+    Ok(())
 }
 
 #[cfg(test)]

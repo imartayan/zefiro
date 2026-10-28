@@ -9,16 +9,18 @@ use crate::frame::{
     read_le32, skippable_frame_size,
 };
 use crate::literals::LiteralsState;
-use crate::sequences::{SequencesState, block_output_limit};
+use crate::sequences::{Placement, SequencesState, block_output_limit};
+use crate::stream::Stream;
 
 const CHECKSUM_SIZE: usize = 4;
 
 /// A reusable decoder: keeps its buffers between calls.
 #[derive(Debug, Clone)]
 pub struct Decoder {
-    checksum: XxHash64,
-    literals: LiteralsState,
-    sequences: SequencesState,
+    pub(crate) checksum: XxHash64,
+    pub(crate) literals: LiteralsState,
+    pub(crate) sequences: SequencesState,
+    pub(crate) stream: Stream,
 }
 
 impl Decoder {
@@ -28,6 +30,7 @@ impl Decoder {
             checksum: XxHash64::with_seed(0),
             literals: LiteralsState::new(),
             sequences: SequencesState::new(),
+            stream: Stream::new(),
         }
     }
 
@@ -105,7 +108,15 @@ impl Decoder {
             let block_written = match block.block_type {
                 BlockType::Compressed => {
                     let max = header.block_size_max as usize;
-                    self.decompress_compressed_block(block_input, output, written, max)?
+                    decompress_compressed_block(
+                        &mut self.literals,
+                        &mut self.sequences,
+                        block_input,
+                        output,
+                        written,
+                        max,
+                        None,
+                    )?
                 }
                 BlockType::Raw => {
                     let target = block_output
@@ -136,37 +147,38 @@ impl Decoder {
         let checksum_size = if header.checksum { CHECKSUM_SIZE } else { 0 };
         Ok((input_pos + checksum_size, written))
     }
+}
 
-    // `ZSTD_decompressBlock_internal`: the block's output goes to `output`
-    // from `start`, earlier bytes are the frame's history.
-    fn decompress_compressed_block(
-        &mut self,
-        block: &[u8],
-        output: &mut [u8],
-        start: usize,
-        block_size_max: usize,
-    ) -> Result<usize, Error> {
-        if block.len() > block_size_max {
-            return Err(Error::SrcSizeWrong);
-        }
-        let capacity = output.len() - start;
-        let (literals, literals_size) = self.literals.decode(block, capacity, block_size_max)?;
-        let (nb_seq, stream) = self.sequences.read_header(&block[literals_size..])?;
-        if nb_seq > 0 && capacity == 0 {
-            return Err(Error::DstSizeTooSmall);
-        }
-        let end = start + block_output_limit(capacity, &literals, block_size_max);
-        let total_history = start + capacity.min(block_size_max);
-        let block_end = self.sequences.execute_block(
-            nb_seq,
-            stream,
-            &literals,
-            output,
-            start..end,
-            total_history,
-        )?;
-        Ok(block_end - start)
+// `ZSTD_decompressBlock_internal`: the block's output goes to `output` from `start`,
+// earlier bytes are the history. `ring_ext_len` is `Some` when streaming, with the length
+// of the previous ring segment before the output start (see `Placement`).
+pub(crate) fn decompress_compressed_block(
+    literals_state: &mut LiteralsState,
+    sequences: &mut SequencesState,
+    block: &[u8],
+    output: &mut [u8],
+    start: usize,
+    block_size_max: usize,
+    ring_ext_len: Option<usize>,
+) -> Result<usize, Error> {
+    if block.len() > block_size_max {
+        return Err(Error::SrcSizeWrong);
     }
+    let capacity = output.len() - start;
+    let (literals, literals_size) = literals_state.decode(block, capacity, block_size_max)?;
+    let (nb_seq, stream) = sequences.read_header(&block[literals_size..])?;
+    if nb_seq > 0 && capacity == 0 {
+        return Err(Error::DstSizeTooSmall);
+    }
+    let ext_len = ring_ext_len.unwrap_or(0);
+    let limit = block_output_limit(capacity, &literals, block_size_max, ring_ext_len.is_some());
+    let place = Placement {
+        range: start..start + limit,
+        ext_len,
+        total_history: start + ext_len + capacity.min(block_size_max),
+    };
+    let block_end = sequences.execute_block(nb_seq, stream, &literals, output, &place)?;
+    Ok(block_end - start)
 }
 
 impl Default for Decoder {

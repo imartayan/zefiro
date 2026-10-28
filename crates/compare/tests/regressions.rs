@@ -18,6 +18,7 @@ fn fuzz_findings_stay_fixed() {
             ("decompress", Some("bin")) => fuzz::decompress,
             ("round_trip", Some("bin")) => fuzz::round_trip,
             ("mutate", Some("bin")) => fuzz::mutate,
+            ("stream", Some("bin")) => fuzz::stream,
             _ => continue,
         };
         body(&std::fs::read(&path).unwrap());

@@ -67,17 +67,34 @@ impl<'a> BitReader<'a> {
     // `nb_bits` < 32. Valid when `bits_consumed + nb_bits` <= 64.
     #[inline(always)]
     pub(crate) fn look_bits(&self, nb_bits: u32) -> u64 {
+        self.look_bits_after(self.bits_consumed, nb_bits)
+    }
+
+    #[inline(always)]
+    fn look_bits_after(&self, consumed: u32, nb_bits: u32) -> u64 {
         debug_assert!(nb_bits < 32);
-        let start = CONTAINER_BITS
-            .wrapping_sub(self.bits_consumed)
-            .wrapping_sub(nb_bits);
+        let start = CONTAINER_BITS.wrapping_sub(consumed).wrapping_sub(nb_bits);
         (self.container >> (start & 63)) & ((1 << nb_bits) - 1)
     }
 
-    // `nb_bits` in 1..=63.
+    // Three `read_bits` in a row, each position one add away from `bits_consumed`.
+    #[inline(always)]
+    pub(crate) fn read_bits_x3(&mut self, nb_bits: [u32; 3]) -> [u64; 3] {
+        let [first, second, third] = nb_bits;
+        let consumed = self.bits_consumed;
+        let after_second = first + second;
+        let values = [
+            self.look_bits_after(consumed, first),
+            self.look_bits_after(consumed + first, second),
+            self.look_bits_after(consumed + after_second, third),
+        ];
+        self.bits_consumed = consumed + (after_second + third);
+        values
+    }
+
+    // `nb_bits` in 1..=63 (0 gives garbage).
     #[inline(always)]
     pub(crate) fn look_bits_fast(&self, nb_bits: u32) -> u64 {
-        debug_assert!(nb_bits >= 1);
         (self.container << (self.bits_consumed & 63)) >> (CONTAINER_BITS.wrapping_sub(nb_bits) & 63)
     }
 

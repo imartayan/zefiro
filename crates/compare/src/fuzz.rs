@@ -7,8 +7,8 @@ use std::sync::Once;
 use rust_zstd_decoder::Decoder;
 
 use crate::{
-    Code, Libzstd, LiteralMode, Outcome, Params, assert_agree, check_oracle_build, compress,
-    decompress_ours,
+    Code, Libzstd, LiteralMode, Outcome, Params, assert_agree, check_oracle_build, compare_stream,
+    compress, decompress_ours,
 };
 
 const MAX_DATA: usize = 1 << 17;
@@ -43,6 +43,35 @@ pub fn decompress(data: &[u8]) {
         input,
         usize::from(u16::from_le_bytes(*capacity)),
         "decompress",
+    );
+}
+
+/// 5 bytes (input and output chunk sizes, window limit), then arbitrary bytes streamed
+/// through both decoders: every call must agree.
+pub fn stream(data: &[u8]) {
+    check_build_once();
+    let Some((&[in_low, in_high, out_low, out_high, window], input)) =
+        data.split_first_chunk::<5>()
+    else {
+        return;
+    };
+    // 1 to 4096 bytes, mostly small.
+    let chunk = |low, high| {
+        let value = u16::from_le_bytes([low, high]);
+        1 + (usize::from(value >> 4) & ((1 << (value & 15)) - 1))
+    };
+    // The default limit, or 2^10 to 2^28 (a bigger window allocates gigabytes).
+    let window_log = if window < 128 {
+        0
+    } else {
+        10 + u32::from(window % 19)
+    };
+    compare_stream(
+        input,
+        &[chunk(in_low, in_high)],
+        &[chunk(out_low, out_high)],
+        window_log,
+        "stream",
     );
 }
 

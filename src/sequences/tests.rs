@@ -64,8 +64,12 @@ fn run(
     let (nb_seq, stream) = state.read_header(block)?;
     let mut out = [history, &vec![0; capacity]].concat();
     let end = history.len() + capacity;
-    let block_end =
-        state.execute_block(nb_seq, stream, &literals, &mut out, history.len()..end, 0)?;
+    let place = Placement {
+        range: history.len()..end,
+        ext_len: 0,
+        total_history: 0,
+    };
+    let block_end = state.execute_block(nb_seq, stream, &literals, &mut out, &place)?;
     Ok(out[history.len()..block_end].to_vec())
 }
 
@@ -145,9 +149,14 @@ fn repeat_mode_needs_a_block_that_started_decoding() {
         in_input: false,
     };
     let mut out = [0; 10];
+    let place = Placement {
+        range: 0..10,
+        ext_len: 0,
+        total_history: 0,
+    };
     assert!(
         state
-            .execute_block(nb_seq, stream, &literals, &mut out, 0..10, 0)
+            .execute_block(nb_seq, stream, &literals, &mut out, &place)
             .is_err()
     );
     assert!(state.read_header(&repeat).is_ok());
@@ -231,7 +240,7 @@ fn execution_checks_in_libzstd_order() {
     let literals = *b"abcdefgh";
     let mut position = 0;
     let mut run = |out: &mut [u8], op, end, sequence| {
-        exec_sequence_exact(out, op, end, sequence, &literals, &mut position)
+        exec_sequence_exact(out, op, end, sequence, &literals, &mut position, 0)
     };
     let mut out = [0u8; 64];
     out[..4].copy_from_slice(b"wxyz");
@@ -256,6 +265,42 @@ fn execution_checks_in_libzstd_order() {
     assert_eq!(&out[..12], b"wxyzwxyyyyyy");
     assert_eq!(run(&mut out, 12, 40, ok(1, 7, 3)), Ok(20));
     assert_eq!(&out[12..20], b"cyycyycy");
+}
+
+#[test]
+fn matches_reach_the_previous_ring_segment() {
+    // Offsets 4, 1, 4 with no literals, as in the test above; the history is the end of
+    // the previous segment (40 bytes), at a safe distance from the new one.
+    let block = rle_block(3, (0, 0, 0), &[]);
+    let mut state = SequencesState::new();
+    let (nb_seq, stream) = state.read_header(&block).unwrap();
+    let (padded, len) = literals(b"");
+    let literals = Literals {
+        padded: &padded,
+        len,
+        in_input: false,
+    };
+    for end in 9..=70 {
+        let mut ring = [b'.'; 70];
+        ring[36..40].copy_from_slice(b"6789");
+        let place = Placement {
+            range: 0..end,
+            ext_len: 40,
+            total_history: 0,
+        };
+        let block_end = state.execute_block(nb_seq, stream, &literals, &mut ring, &place);
+        assert_eq!(block_end, Ok(9), "end {end}");
+        assert_eq!(&ring[..9], b"678888888", "end {end}");
+        state.repeat_offsets = INITIAL_REPEAT_OFFSETS;
+    }
+    // Four bytes back from the start of a segment, with 3 bytes of the previous one.
+    let place = Placement {
+        range: 0..70,
+        ext_len: 3,
+        total_history: 0,
+    };
+    let result = state.execute_block(nb_seq, stream, &literals, &mut [0; 70], &place);
+    assert_eq!(result, Err(Error::CorruptionDetected));
 }
 
 #[test]
@@ -291,7 +336,7 @@ fn last_literals_must_fit() {
 #[test]
 fn output_limit_follows_the_literals_placement() {
     let block_max = 1 << 17;
-    let limit = |capacity, len, in_input| {
+    let limit = |capacity, len, in_input, streaming| {
         let (padded, _) = literals(&[]);
         block_output_limit(
             capacity,
@@ -301,16 +346,19 @@ fn output_limit_follows_the_literals_placement() {
                 in_input,
             },
             block_max,
+            streaming,
         )
     };
     let room = block_max + 64;
     // Room after the block for the literals: they go there and cap the block.
-    assert_eq!(limit(room + 1000 + 1, 1000, false), block_max + 32);
-    assert_eq!(limit(room + 1000, 1000, false), room + 1000);
+    assert_eq!(limit(room + 1000 + 1, 1000, false, false), block_max + 32);
+    assert_eq!(limit(room + 1000, 1000, false, false), room + 1000);
     // Raw literals read in place, or little room: the capacity.
-    assert_eq!(limit(1 << 20, 1000, true), 1 << 20);
-    assert_eq!(limit(1000, 10, false), 1000);
-    assert_eq!(limit(block_max, 70_000, false), block_max);
+    assert_eq!(limit(1 << 20, 1000, true, false), 1 << 20);
+    assert_eq!(limit(1000, 10, false, false), 1000);
+    assert_eq!(limit(block_max, 70_000, false, false), block_max);
+    // Streaming never puts literals after the block.
+    assert_eq!(limit(room + 1000 + 1, 1000, false, true), room + 1000 + 1);
 }
 
 #[test]
@@ -348,13 +396,13 @@ fn run_loop<const PREFETCH: bool>(
     let (nb_seq, stream) = state.read_header(block)?;
     let mut out = [history, &vec![0; capacity]].concat();
     let end = history.len() + capacity;
-    let (op, _, repeat_offsets) = state.run_sequences::<Portable, PREFETCH>(
-        nb_seq,
-        stream,
-        &literals,
-        &mut out,
-        history.len()..end,
-    )?;
+    let place = Placement {
+        range: history.len()..end,
+        ext_len: 0,
+        total_history: 0,
+    };
+    let (op, _, repeat_offsets) = state
+        .run_sequences::<Portable, PREFETCH, false>(nb_seq, stream, &literals, &mut out, &place)?;
     Ok((out[history.len()..op].to_vec(), repeat_offsets))
 }
 

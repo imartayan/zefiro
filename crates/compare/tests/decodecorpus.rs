@@ -55,3 +55,46 @@ fn decodecorpus_frames_decode_to_their_originals() {
     }
     eprintln!("{frames} frames");
 }
+
+/// The same frames through `decompress_stream`, several chunkings, every call compared.
+#[test]
+#[allow(clippy::print_stderr)]
+fn decodecorpus_frames_stream_like_libzstd() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/decodecorpus");
+    let mut frames = 0;
+    for entry in std::fs::read_dir(&root).into_iter().flatten() {
+        let set = entry.unwrap().file_name().to_string_lossy().into_owned();
+        let Some(suffix) = set.strip_prefix("zst") else {
+            continue;
+        };
+        let mut names: Vec<_> = std::fs::read_dir(root.join(&set))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        let step = if cfg!(debug_assertions) { 4 } else { 1 };
+        for (index, name) in names.into_iter().enumerate().step_by(step) {
+            let frame = std::fs::read(root.join(&set).join(&name)).unwrap();
+            let stem = Path::new(&name).file_stem().unwrap();
+            let original = std::fs::read(root.join(format!("orig{suffix}")).join(stem)).unwrap();
+            let what = format!("{set}/{}", name.to_string_lossy());
+            let plans: [(&[usize], &[usize]); 4] = [
+                (&[1 << 20], &[1 << 20]),
+                (&[1 << 17], &[1 << 17]),
+                (&[1000, 7], &[3000, 1 << 16]),
+                (&[1 + index % 97], &[1 + index % 211]),
+            ];
+            for (in_sizes, out_sizes) in plans {
+                let run = compare_stream(&frame, in_sizes, out_sizes, 0, &what);
+                match run.outcome {
+                    Outcome::Ok { output, .. } => assert!(output == original, "{what}: wrong"),
+                    Outcome::Err(code) => panic!("{what}: {code:?}"),
+                }
+            }
+            frames += 1;
+        }
+    }
+    if frames == 0 {
+        eprintln!("skipped: run scripts/decodecorpus.sh");
+    }
+}

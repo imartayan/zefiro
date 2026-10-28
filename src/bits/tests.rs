@@ -118,6 +118,23 @@ fn reading_past_the_start_returns_what_c_returns() {
 }
 
 #[test]
+fn read_bits_x3_matches_three_reads_even_past_the_start() {
+    let mut rng = Rng::with_seed(7);
+    for _ in 0..2000 {
+        let mut stream: Vec<u8> = (0..=rng.usize(..12)).map(|_| rng.u8(..)).collect();
+        *stream.last_mut().unwrap() |= 1;
+        let widths = [rng.u32(..10), rng.u32(..10), rng.u32(..10)];
+        let mut one_by_one = BitReader::new(&stream).unwrap();
+        let mut together = one_by_one.clone();
+        for _ in 0..4 {
+            let expected = widths.map(|width| one_by_one.read_bits(width));
+            assert_eq!(together.read_bits_x3(widths), expected);
+            assert_eq!(together.bits_consumed, one_by_one.bits_consumed);
+        }
+    }
+}
+
+#[test]
 fn look_bits_fast_masks_shift_like_c() {
     let mut stream = [0x11; 8];
     stream[7] = 0x80;

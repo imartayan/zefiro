@@ -185,6 +185,35 @@ pub(crate) fn is_skippable_magic(src: &[u8]) -> bool {
     src.len() >= 4 && read_le32(src, 0) & SKIPPABLE_MAGIC_MASK == SKIPPABLE_MAGIC
 }
 
+// `ZSTD_findFrameCompressedSize`: size of the (skippable) frame at the start of `src`,
+// from its block headers.
+pub(crate) fn find_frame_size(src: &[u8]) -> Result<usize, Error> {
+    if is_skippable_magic(src) && src.len() >= SKIPPABLE_HEADER_SIZE {
+        return skippable_frame_size(src);
+    }
+    let FrameStart::Frame(header) = parse_frame_start(src)? else {
+        return Err(Error::SrcSizeWrong);
+    };
+    let mut pos = header.header_size;
+    loop {
+        let block = parse_block_header(&src[pos..])?;
+        pos += BLOCK_HEADER_SIZE + block.input_size();
+        if pos > src.len() {
+            return Err(Error::SrcSizeWrong);
+        }
+        if block.last {
+            break;
+        }
+    }
+    if header.checksum {
+        if src.len() - pos < 4 {
+            return Err(Error::SrcSizeWrong);
+        }
+        pos += 4;
+    }
+    Ok(pos)
+}
+
 // `ZSTD_getcBlockSize`.
 pub(crate) fn parse_block_header(src: &[u8]) -> Result<BlockHeader, Error> {
     let Some(&[b0, b1, b2]) = src.first_chunk::<BLOCK_HEADER_SIZE>() else {

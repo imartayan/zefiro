@@ -2,7 +2,7 @@
 //! (bytes consumed and written, frame done) for any input and output chunking, intact,
 //! truncated and corrupted, with and without ring wraps and window limits.
 
-use std::io::{BufReader, ErrorKind, Read};
+use std::io::BufReader;
 
 use compare::*;
 use proptest::prelude::*;
@@ -444,27 +444,8 @@ fn chunk_sizes() -> impl Strategy<Value = Vec<usize>> {
 
 /// A `Reader` over `input` gives libzstd's output or error.
 fn check_reader(input: &[u8], buffer_capacity: usize, theirs: &Outcome, what: &str) {
-    let mut reader = Reader::new(BufReader::with_capacity(buffer_capacity, input));
-    let mut output = Vec::new();
-    match (reader.read_to_end(&mut output), theirs) {
-        (
-            Ok(_),
-            Outcome::Ok {
-                output: expected, ..
-            },
-        ) => {
-            assert!(output == *expected, "{what}: reader output differs");
-        }
-        (Err(error), Outcome::Err(Code::Truncated)) => {
-            assert_eq!(error.kind(), ErrorKind::UnexpectedEof, "{what}");
-        }
-        (Err(error), Outcome::Err(code)) => {
-            assert_eq!(error.kind(), ErrorKind::InvalidData, "{what}");
-            let source = error.get_ref().and_then(|e| e.downcast_ref::<Error>());
-            assert_eq!(Code::from(*source.unwrap()), *code, "{what}");
-        }
-        (result, theirs) => panic!("{what}: reader {result:?}, libzstd {theirs:?}"),
-    }
+    let reader = Reader::new(BufReader::with_capacity(buffer_capacity, input));
+    assert_reader_agrees(reader, theirs, what);
 }
 
 fn small_bases() -> Vec<Base> {

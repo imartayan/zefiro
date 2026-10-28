@@ -3,6 +3,8 @@
 //! in `tests/data/golden-dictionary.txt` by `crates/compare/tests/golden_files.rs`. Needs
 //! no oracle and no file access.
 
+#[cfg(feature = "std")]
+use rust_zstd_decoder::Reader;
 use rust_zstd_decoder::{Decoder, Dictionary, Error};
 
 const ARCHIVE: &[u8] = include_bytes!("data/golden-dictionary.bin");
@@ -68,6 +70,18 @@ fn golden_dictionaries_load_and_decode_as_libzstd_did() {
                 (consumed, written) = (consumed + progress.consumed, written + progress.written);
             }
             assert_eq!(verdict(Ok(written), &output), expected, "{line} (stream)");
+            // And through a `Reader` that carries the dictionary.
+            #[cfg(feature = "std")]
+            {
+                let mut fresh = Decoder::new();
+                fresh.set_dictionary(dictionary.filter(|_| fields[1] != "none"));
+                let mut reader =
+                    Reader::with_decoder(fresh, std::io::BufReader::with_capacity(97, input));
+                let mut output = Vec::new();
+                std::io::Read::read_to_end(&mut reader, &mut output).unwrap();
+                output.resize(capacity, 0);
+                assert_eq!(verdict(Ok(written), &output), expected, "{line} (reader)");
+            }
         }
         frame_rows += 1;
     }

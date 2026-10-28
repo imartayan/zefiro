@@ -16,9 +16,16 @@ pub struct Reader<R: BufRead> {
 impl<R: BufRead> Reader<R> {
     /// A reader of the frames in `inner`, with the default window limit (128 MiB).
     pub fn new(inner: R) -> Self {
+        Self::with_decoder(Decoder::new(), inner)
+    }
+
+    /// A reader of the frames in `inner` that uses the settings of `decoder`
+    /// (dictionary, window limit). A stream in progress in `decoder` is abandoned.
+    pub fn with_decoder(mut decoder: Decoder, inner: R) -> Self {
+        decoder.stream.reset();
         Self {
             inner,
-            decoder: Decoder::new(),
+            decoder,
             at_frame_boundary: true,
         }
     }

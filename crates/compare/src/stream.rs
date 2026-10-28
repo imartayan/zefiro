@@ -3,9 +3,10 @@
 
 #![allow(clippy::print_stderr)]
 
+use std::io::{ErrorKind, Read};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
-use rust_zstd_decoder::{Decoder, Dictionary};
+use rust_zstd_decoder::{Decoder, Dictionary, Error};
 
 use crate::{Code, Libzstd, Outcome, assert_agree};
 
@@ -161,4 +162,29 @@ pub fn compare_stream_dictionary(
         resume_unwind(panic);
     }
     theirs
+}
+
+/// Reads `reader` to the end: libzstd's output for `Ok`, else `UnexpectedEof` for a
+/// truncated frame, or `InvalidData` carrying the same error code.
+pub fn assert_reader_agrees(mut reader: impl Read, theirs: &Outcome, what: &str) {
+    let mut output = Vec::new();
+    match (reader.read_to_end(&mut output), theirs) {
+        (
+            Ok(_),
+            Outcome::Ok {
+                output: expected, ..
+            },
+        ) => {
+            assert!(output == *expected, "{what}: reader output differs");
+        }
+        (Err(error), Outcome::Err(Code::Truncated)) => {
+            assert_eq!(error.kind(), ErrorKind::UnexpectedEof, "{what}");
+        }
+        (Err(error), Outcome::Err(code)) => {
+            assert_eq!(error.kind(), ErrorKind::InvalidData, "{what}");
+            let source = error.get_ref().and_then(|e| e.downcast_ref::<Error>());
+            assert_eq!(Code::from(*source.unwrap()), *code, "{what}");
+        }
+        (result, theirs) => panic!("{what}: reader {result:?}, libzstd {theirs:?}"),
+    }
 }

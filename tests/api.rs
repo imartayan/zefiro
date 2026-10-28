@@ -4,7 +4,7 @@
 
 use std::io::{BufReader, Cursor, ErrorKind, Read};
 
-use rust_zstd_decoder::{Error, Reader, decompress};
+use rust_zstd_decoder::{Decoder, Error, Reader, decompress};
 
 const MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
@@ -166,4 +166,49 @@ fn reader_reports_truncated_and_invalid_input() {
     let mut reader = Reader::new(Cursor::new(broken));
     let mut output = vec![0; 10_000];
     assert_eq!(reader.read(&mut output).unwrap(), 3000);
+}
+
+#[test]
+fn reader_with_decoder_applies_the_window_limit() {
+    // Window descriptor 0x58: 1 << 21 bytes.
+    let big_window = [&MAGIC[..], &[0, 0x58], &block(true, 0, 3, b"abc")].concat();
+    let reader = |log| {
+        let mut decoder = Decoder::new();
+        decoder.set_window_log_max(log);
+        Reader::with_decoder(decoder, Cursor::new(&big_window))
+    };
+    let mut output = Vec::new();
+    reader(21).read_to_end(&mut output).unwrap();
+    assert_eq!(output, b"abc");
+    let error = reader(20).read_to_end(&mut output).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert_eq!(
+        error.get_ref().unwrap().to_string(),
+        Error::WindowTooLarge.to_string()
+    );
+}
+
+#[test]
+fn reader_without_a_dictionary_refuses_a_frame_that_needs_one() {
+    // Dictionary ID flag 1 (one byte), ID 7.
+    let frame = [&MAGIC[..], &[0x01, 0x38, 7], &block(true, 0, 0, b"")].concat();
+    let error = read_all(&frame, 16).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert_eq!(
+        error.get_ref().unwrap().to_string(),
+        Error::DictionaryWrong.to_string()
+    );
+}
+
+#[test]
+fn reader_with_decoder_abandons_a_stream_in_progress() {
+    let input = frame(&data(3000), 1000, false);
+    let mut decoder = Decoder::new();
+    decoder
+        .decompress_stream(&input[..50], &mut [0; 10])
+        .unwrap();
+    let mut reader = Reader::with_decoder(decoder, Cursor::new(&input));
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output).unwrap();
+    assert_eq!(output, data(3000));
 }

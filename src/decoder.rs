@@ -26,6 +26,7 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    /// A decoder with the default window limit and no dictionary.
     #[must_use]
     pub fn new() -> Self {
         Self {

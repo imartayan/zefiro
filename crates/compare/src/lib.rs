@@ -22,6 +22,6 @@ pub use fastrand::Rng;
 pub use oracle::{Code, Libzstd, Outcome, assert_agree, check_oracle_build};
 pub use ours::decompress_ours;
 pub use stream::{
-    Run, Step, compare_stream, compare_stream_dictionary, run_stream, stream_ours,
-    stream_ours_dictionary, stream_theirs, stream_theirs_dictionary,
+    Run, Step, assert_reader_agrees, compare_stream, compare_stream_dictionary, run_stream,
+    stream_ours, stream_ours_dictionary, stream_theirs, stream_theirs_dictionary,
 };

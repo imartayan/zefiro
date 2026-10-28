@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds ref/libzstd-rs-sys/tests/decodecorpus.c and fills
+# Builds tests/decodecorpus.c of zstd v1.5.7 (downloaded once into target/upstream, or
+# the tree in $ZSTD_SRC) and fills
 # corpus/decodecorpus/{zst,orig} with valid frames using every format feature
 # and their originals.
 #
@@ -12,12 +13,14 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+source scripts/upstream.sh
 count=${1:-2000}
 seed=${2:-1}
 shift $(( $# > 2 ? 2 : $# ))
 
-L=ref/libzstd-rs-sys/lib
-P=ref/libzstd-rs-sys/programs
+src=$(zstd_src)
+L=$src/lib
+P=$src/programs
 bin=target/decodecorpus
 
 mkdir -p target
@@ -26,7 +29,7 @@ cc -O2 -w -DZSTD_LEGACY_SUPPORT=0 -DZSTD_MULTITHREAD=0 \
   -I$L -I$L/common -I$L/compress -I$L/decompress -I$L/dictBuilder -I$P \
   $L/common/*.c $(ls $L/compress/*.c | grep -v '/zstd_compress.c') $L/decompress/*.c \
   $L/dictBuilder/*.c $P/util.c $P/timefn.c \
-  ref/libzstd-rs-sys/tests/decodecorpus.c -o $bin -lm
+  $src/tests/decodecorpus.c -o $bin -lm
 
 out=corpus/decodecorpus
 set_name=${SET:-}

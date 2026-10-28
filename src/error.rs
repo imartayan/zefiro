@@ -4,15 +4,25 @@ use core::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Error {
+    /// Not a zstd or skippable frame magic number.
     PrefixUnknown,
+    /// Input ends inside a frame, or has bytes after the last frame.
     SrcSizeWrong,
+    /// The frame header uses an unsupported parameter.
     FrameParameterUnsupported,
+    /// The window of the frame is above the limit of the decoder.
     WindowTooLarge,
+    /// The frame is malformed.
     CorruptionDetected,
+    /// The content checksum does not match.
     ChecksumWrong,
+    /// Invalid literals section header.
     LiteralsHeaderWrong,
+    /// The output buffer or `max_len` is too small.
     DstSizeTooSmall,
+    /// The frame needs another dictionary than the one set.
     DictionaryWrong,
+    /// The dictionary is invalid.
     DictionaryCorrupted,
 }
 

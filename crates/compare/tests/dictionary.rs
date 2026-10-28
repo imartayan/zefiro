@@ -1,12 +1,13 @@
 //! Dictionaries against libzstd: trained (ZDICT) and raw content ones, frames compressed
 //! with them, wrong, missing and corrupted dictionaries, one-shot and streaming.
 
+use std::io::BufReader;
 use std::sync::OnceLock;
 
 use compare::Rng;
 use compare::*;
 use proptest::prelude::*;
-use rust_zstd_decoder::{Decoder, Dictionary, Error};
+use rust_zstd_decoder::{Decoder, Dictionary, Error, Reader};
 
 /// Cases of the randomized tests: many in release builds.
 const CASES: u32 = if cfg!(debug_assertions) { 300 } else { 10_000 };
@@ -363,6 +364,34 @@ fn streams_with_wrong_dictionaries_and_window_limits_agree() {
                     window_log,
                     &what,
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn readers_with_dictionaries_and_window_limits_agree() {
+    // One input byte per call: no single-pass shortcut, which skips the window check.
+    let fixtures = fixtures();
+    let dictionaries = all_dictionaries();
+    for (index, frame) in fixtures.frames.iter().enumerate() {
+        for other in [frame.dictionary, (index + 4) % dictionaries.len()] {
+            for window_log in [0, 10, 17] {
+                let what = format!("{} with dictionary {other} window {window_log}", frame.name);
+                let theirs = stream_theirs_dictionary(
+                    dictionaries[other],
+                    &frame.bytes,
+                    &[1],
+                    &[4096],
+                    window_log,
+                );
+                let mut decoder = Decoder::new();
+                decoder.set_window_log_max(window_log);
+                if !dictionaries[other].is_empty() {
+                    decoder.set_dictionary(Some(&Dictionary::new(dictionaries[other]).unwrap()));
+                }
+                let input = BufReader::with_capacity(1, frame.bytes.as_slice());
+                assert_reader_agrees(Reader::with_decoder(decoder, input), &theirs.outcome, &what);
             }
         }
     }

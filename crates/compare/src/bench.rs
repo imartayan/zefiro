@@ -5,6 +5,7 @@
 
 use std::fmt::Write as _;
 use std::hint::black_box;
+use std::io::IsTerminal as _;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,8 +34,10 @@ const LONG_PIECE: Range<usize> = 256..4096;
 const STREAM_CHUNK: usize = 128 << 10;
 const DEFAULT_ROUNDS: usize = 10;
 const MIB: f64 = (1 << 20) as f64;
+// Ratios to libzstd within this band are printed without color.
+const RATIO_NOISE: f64 = 0.02;
 const USAGE: &str = "usage: bench [--rounds N] [--case SUBSTRING[,..]] [--impl NAME[,..]] \
-                     [--tsv FILE] [--md]";
+                     [--tsv FILE] [--md] (a colored table on a terminal, TSV otherwise)";
 
 /// A one-shot decompressor under test, owning its context and output buffer.
 pub trait Impl {
@@ -303,6 +306,8 @@ pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
     let tsv = tsv(&rows);
     if let Some(path) = &args.tsv {
         fs::write(path, &tsv).unwrap_or_else(|e| usage(&format!("{}: {e}", path.display())));
+    } else if !args.markdown && std::io::stdout().is_terminal() {
+        print!("{}", pretty(&rows, std::env::var_os("NO_COLOR").is_none()));
     } else if !args.markdown {
         print!("{tsv}");
     }
@@ -474,11 +479,7 @@ pub fn tsv(rows: &[Row]) -> String {
 /// then each impl over `libzstd`.
 #[must_use]
 pub fn markdown(rows: &[Row]) -> String {
-    let names: Vec<_> = rows
-        .iter()
-        .take_while(|r| r.case == rows[0].case)
-        .map(|r| r.imp)
-        .collect();
+    let names = impl_names(rows);
     let baseline = names.iter().position(|&name| name == "libzstd");
     let ratio_names: Vec<_> = names
         .iter()
@@ -514,6 +515,68 @@ pub fn markdown(rows: &[Row]) -> String {
     out
 }
 
+/// Aligned table for a terminal: MiB/s of each impl and its ratio to `libzstd`
+/// (green or red outside the noise band), the fastest in bold, geomeans last.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn pretty(rows: &[Row], color: bool) -> String {
+    let paint = |text: &str, code: &str| {
+        if color && !code.is_empty() {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    };
+    let names = impl_names(rows);
+    let baseline = names.iter().position(|&name| name == "libzstd");
+    let case_width = rows.iter().map(|r| r.case.len()).max().unwrap_or(0).max(7);
+    let widths: Vec<_> = names.iter().map(|name| name.len().max(11)).collect();
+    let cell =
+        |out: &mut String, width: usize, speed: Option<f64>, ratio: Option<f64>, bold: bool| {
+            let speed_text = speed.map_or(String::new(), |speed| format!("{speed:.0}"));
+            let ratio_text = ratio.map_or(String::new(), |ratio| format!(" {ratio:.2}x"));
+            let padding = (width + 2).saturating_sub(speed_text.len() + ratio_text.len());
+            out.push_str(&" ".repeat(padding));
+            out.push_str(&paint(&speed_text, if bold { "1" } else { "" }));
+            let ratio_color = match ratio {
+                Some(ratio) if ratio > 1.0 + RATIO_NOISE => "32",
+                Some(ratio) if ratio < 1.0 - RATIO_NOISE => "31",
+                _ => "",
+            };
+            out.push_str(&paint(&ratio_text, ratio_color));
+        };
+
+    let mut out = paint(&format!("{:<case_width$}", "MiB/s"), "1;2");
+    for (name, width) in names.iter().zip(&widths) {
+        out.push_str(&paint(&format!("  {name:>width$}"), "1"));
+    }
+    out.push('\n');
+    let mut log_ratio_sums = vec![0.0; names.len()];
+    let mut case_count = 0;
+    for case in rows.chunk_by(|a, b| a.case == b.case) {
+        let speeds: Vec<_> = case.iter().map(Row::mib_per_s).collect();
+        let fastest = (0..speeds.len()).max_by(|&a, &b| speeds[a].total_cmp(&speeds[b]));
+        let _ = write!(out, "{:<case_width$}", case[0].case);
+        for (i, (&speed, &width)) in speeds.iter().zip(&widths).enumerate() {
+            let ratio = baseline.filter(|&b| b != i).map(|b| speed / speeds[b]);
+            log_ratio_sums[i] += ratio.map_or(0.0, f64::ln);
+            cell(&mut out, width, Some(speed), ratio, Some(i) == fastest);
+        }
+        out.push('\n');
+        case_count += 1;
+    }
+    if baseline.is_some() && case_count > 1 {
+        out.push_str(&paint(&format!("{:<case_width$}", "geomean"), "1;2"));
+        for (i, &width) in widths.iter().enumerate() {
+            let ratio =
+                (Some(i) != baseline).then(|| (log_ratio_sums[i] / case_count as f64).exp());
+            cell(&mut out, width, None, ratio, false);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn time_pass(imp: &mut dyn Impl, case: &Case) -> Duration {
     let start = Instant::now();
     for (frame, range) in &case.frames {
@@ -525,6 +588,14 @@ fn time_pass(imp: &mut dyn Impl, case: &Case) -> Duration {
 fn usage(message: &str) -> ! {
     eprintln!("{message}\n{USAGE}");
     process::exit(2);
+}
+
+// Impls in row order, from the rows of the first case.
+fn impl_names(rows: &[Row]) -> Vec<&'static str> {
+    rows.iter()
+        .take_while(|r| r.case == rows[0].case)
+        .map(|r| r.imp)
+        .collect()
 }
 
 fn grow(buffer: &mut Vec<u8>, size: usize) {

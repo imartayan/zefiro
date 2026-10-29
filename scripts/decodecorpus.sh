@@ -25,7 +25,7 @@ bin=target/decodecorpus
 
 mkdir -p target
 # zstd_compress.c is included by decodecorpus.c itself
-cc -O2 -w -DZSTD_LEGACY_SUPPORT=0 -DZSTD_MULTITHREAD=0 \
+cc -O2 -w -DZSTD_DISABLE_ASM=1 -DZSTD_LEGACY_SUPPORT=0 -DZSTD_MULTITHREAD=0 \
   -I$L -I$L/common -I$L/compress -I$L/decompress -I$L/dictBuilder -I$P \
   $L/common/*.c $(ls $L/compress/*.c | grep -v '/zstd_compress.c') $L/decompress/*.c \
   $L/dictBuilder/*.c $P/util.c $P/timefn.c \

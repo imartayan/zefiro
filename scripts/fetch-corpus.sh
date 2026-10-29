@@ -33,7 +33,7 @@ if [ ! -s corpus/silesia-small.tar ]; then
     head -c 1310690 "$work/full/$name" > "$work/silesia-small/$name"
     members+=("silesia-small/$name")
   done
-  tar -c -n -f corpus/silesia-small.tar -C "$work" "${members[@]}"
+  tar -c -n --no-recursion -f corpus/silesia-small.tar -C "$work" "${members[@]}"
   rm -rf "$work"
 fi
 ls -l corpus

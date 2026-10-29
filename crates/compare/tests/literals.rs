@@ -9,7 +9,7 @@ use compare::{Rng, *};
 use proptest::prelude::*;
 use proptest::sample::Index;
 use proptest::test_runner::TestRunner;
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 unsafe extern "C" {
     fn HUF_selectDecoder(dst_size: usize, src_size: usize) -> u32;

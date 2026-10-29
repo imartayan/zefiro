@@ -6,7 +6,7 @@
 use std::io::{ErrorKind, Read};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
-use rust_zstd_decoder::{Decoder, Dictionary, Error};
+use zefiro::{Decoder, Dictionary, Error};
 
 use crate::{Code, Libzstd, Outcome, assert_agree};
 

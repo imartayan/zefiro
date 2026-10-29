@@ -3,7 +3,7 @@
 //! large libzstd frames, intact, truncated and corrupted, are compared here.
 
 use compare::*;
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 const LONG_WINDOW_LOG: i32 = 27;
 const HISTORY: usize = 17 << 20;

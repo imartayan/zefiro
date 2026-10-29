@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use compare::*;
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 struct Checker {
     oracle: Libzstd,

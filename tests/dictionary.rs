@@ -4,8 +4,8 @@
 //! no oracle and no file access.
 
 #[cfg(feature = "std")]
-use rust_zstd_decoder::Reader;
-use rust_zstd_decoder::{Decoder, Dictionary, Error};
+use zefiro::Reader;
+use zefiro::{Decoder, Dictionary, Error};
 
 const ARCHIVE: &[u8] = include_bytes!("data/golden-dictionary.bin");
 const MANIFEST: &str = include_str!("data/golden-dictionary.txt");

@@ -8,7 +8,7 @@ use compare::*;
 use proptest::prelude::*;
 use proptest::sample::Index;
 use proptest::test_runner::TestRunner;
-use rust_zstd_decoder::{Error, Reader, decompress};
+use zefiro::{Error, Reader, decompress};
 
 /// Cases of the randomized tests: many in release builds.
 const CASES: u32 = if cfg!(debug_assertions) { 3000 } else { 40_000 };

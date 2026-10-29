@@ -5,7 +5,7 @@
 use std::ffi::{c_int, c_void};
 
 use compare::*;
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 struct Check {
     oracle: Libzstd,

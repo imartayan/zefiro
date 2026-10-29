@@ -1,4 +1,4 @@
-# rust-zstd-decoder
+# zefiro
 
 A zstd decompressor in Rust. It decodes only (no compression), and gives the same
 output and the same error codes as libzstd 1.5.7, including on invalid input. Not
@@ -21,7 +21,7 @@ Minimum supported Rust version: 1.89.
 ## Usage
 
 ```rust
-use rust_zstd_decoder::decompress;
+use zefiro::decompress;
 
 // A frame with one raw block: "hello".
 let compressed = [
@@ -36,7 +36,7 @@ Into a buffer you own, reusing the decoder (and its tables) between calls. The b
 needs the content size of the frames, which `frame_content_size` reads from a header:
 
 ```rust
-use rust_zstd_decoder::{Decoder, frame_content_size};
+use zefiro::{Decoder, frame_content_size};
 
 let compressed = [
     0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x05, 0x29, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
@@ -53,7 +53,7 @@ invalid input is `ErrorKind::InvalidData` with the `Error` as its source:
 
 ```rust
 use std::io::Read;
-use rust_zstd_decoder::Reader;
+use zefiro::Reader;
 
 let compressed = [
     0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x05, 0x29, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
@@ -69,7 +69,7 @@ A dictionary and a window limit, for frames read from a file:
 ```rust,no_run
 use std::fs::File;
 use std::io::{BufReader, Read};
-use rust_zstd_decoder::{Decoder, Dictionary, Reader};
+use zefiro::{Decoder, Dictionary, Reader};
 
 let dictionary = Dictionary::new(&std::fs::read("data.dict").unwrap()).unwrap();
 let mut decoder = Decoder::new();
@@ -84,7 +84,7 @@ Without `Reader`, feed `decompress_stream` with pieces of input and drain its ou
 It stops when the input is used up and the output buffer is not full:
 
 ```rust
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 let compressed = [
     0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x05, 0x29, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
@@ -115,7 +115,7 @@ the same comparisons under libFuzzer.
 
 ## Performance
 
-On an Apple M1, one-shot decompression runs at 0.98x to 1.03x of libzstd on the
-benchmark files (levels 1 to 19). On an AMD Zen 3 (x86-64, libzstd with its BMI2
+On an Apple M1, one-shot decompression runs at 0.99x to 1.11x of libzstd on the
+benchmark files (levels 1 to 22, geomean 1.02x). On an AMD Zen 3 (x86-64, libzstd with its BMI2
 assembly Huffman loop) it runs at 0.96x to 1.12x on the benchmark files, with the same
 verdicts.

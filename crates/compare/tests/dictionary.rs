@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use compare::Rng;
 use compare::*;
 use proptest::prelude::*;
-use rust_zstd_decoder::{Decoder, Dictionary, Error, Reader};
+use zefiro::{Decoder, Dictionary, Error, Reader};
 
 /// Cases of the randomized tests: many in release builds.
 const CASES: u32 = if cfg!(debug_assertions) { 300 } else { 10_000 };

@@ -2,7 +2,7 @@
 //! 1.5.7 gave for them (`tests/data/golden.txt`, written by
 //! `crates/compare/tests/golden_files.rs`). Needs no oracle and no file access.
 
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 const INPUTS: &[u8] = include_bytes!("data/golden.bin");
 const MANIFEST: &str = include_str!("data/golden.txt");

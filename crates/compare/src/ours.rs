@@ -1,4 +1,4 @@
-use rust_zstd_decoder::{Decoder, Error};
+use zefiro::{Decoder, Error};
 
 use crate::{Code, Outcome};
 

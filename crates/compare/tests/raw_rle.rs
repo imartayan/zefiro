@@ -2,7 +2,7 @@
 //! and capacity handling, compared with libzstd including error codes.
 
 use compare::*;
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 const MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 const BLOCK_SIZES: [usize; 12] = [

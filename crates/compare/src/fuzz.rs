@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::sync::Once;
 
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 use crate::{
     Code, Libzstd, LiteralMode, Outcome, Params, assert_agree, check_oracle_build,

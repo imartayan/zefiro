@@ -9,7 +9,7 @@ use compare::*;
 use proptest::prelude::*;
 use proptest::sample::Index;
 use proptest::test_runner::TestRunner;
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 /// Cases per test: many in release builds.
 const CASES: u32 = if cfg!(debug_assertions) {

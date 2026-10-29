@@ -4,7 +4,7 @@
 
 use std::io::{BufReader, Cursor, ErrorKind, Read};
 
-use rust_zstd_decoder::{Decoder, Error, Reader, decompress};
+use zefiro::{Decoder, Error, Reader, decompress};
 
 const MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 

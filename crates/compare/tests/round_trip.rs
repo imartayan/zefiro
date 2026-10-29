@@ -3,7 +3,7 @@
 
 use compare::*;
 use proptest::prelude::*;
-use rust_zstd_decoder::Decoder;
+use zefiro::Decoder;
 
 const LEVELS: [i32; 6] = [-7, 1, 3, 9, 19, 22];
 

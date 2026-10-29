@@ -1,7 +1,7 @@
 //! Differential checks of dictionaries: loading, then one-shot decoding through every
 //! libzstd entry point.
 
-use rust_zstd_decoder::{Decoder, Dictionary};
+use zefiro::{Decoder, Dictionary};
 
 use crate::{Code, Libzstd, Outcome, Params, assert_agree, compress, decompress_ours};
 

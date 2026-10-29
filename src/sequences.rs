@@ -728,8 +728,9 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
 }
 
 // `exec_sequence` for a match starting before the segment, out of line with the cursor by
-// value like `exec_sequence_end`, so that the loop keeps its shape. A match in a dictionary is
-// common: wild copy. A match in the previous segment of a ring is rare: the exact path.
+// value like `exec_sequence_end`, so that the loop keeps its shape. The history before the
+// segment is a dictionary (`padded`) or the end of the previous segment of the ring, ahead of
+// the output position: wild copy from there when the ring is large enough around it.
 // Safety: that of `exec_sequence`, after its checks, and `offset > literals_end - out_base`.
 #[cold]
 #[inline(never)]
@@ -738,9 +739,6 @@ unsafe fn exec_sequence_ext(
     cursor: Cursor,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
-    let Ext::Dict(padded) = limits.ext else {
-        return exec_sequence_end(sequence, cursor, limits);
-    };
     let Sequence {
         literal_length,
         match_length,
@@ -749,31 +747,40 @@ unsafe fn exec_sequence_ext(
     let Cursor { op, lit } = cursor;
     let literals_end = op.wrapping_add(literal_length);
     let match_start = literals_end.addr() - limits.out_base.addr();
-    let dictionary_len = padded.len() - WILDCOPY_OVERLENGTH;
-    if offset > match_start + dictionary_len {
+    let ext_len = limits.ext.len();
+    if offset > match_start + ext_len {
         return Err(Error::CorruptionDetected);
     }
-    let from_dictionary = match_length.min(offset - match_start);
-    let source = dictionary_len + match_start - offset;
+    let from_ext = match_length.min(offset - match_start);
+    let source = ext_len + match_start - offset;
+    let ext_source = match limits.ext {
+        Ext::Dict(padded) => padded.as_ptr(),
+        Ext::Ring(_) => {
+            // History within the slack of the output position may be overwritten by the wild
+            // copies, and reads past the ring are out: the exact path.
+            let clobbered = source < match_start + WILDCOPY_OVERLENGTH;
+            if clobbered || source + from_ext + WILDCOPY_OVERLENGTH > limits.out_len {
+                return exec_sequence_end(sequence, cursor, limits);
+            }
+            limits.out_base.cast_const()
+        }
+    };
     let kernel = Portable;
-    // SAFETY: literals and slack as in `exec_sequence`; the first `from_dictionary` bytes of the
-    // match are the dictionary from `source` on, whose slack takes the overshoot of the wild
-    // copy, the rest starts at `out_base`, `match_start + from_dictionary` bytes before its
-    // destination (distinct allocations).
+    // SAFETY: literals and slack as in `exec_sequence`; the first `from_ext` bytes of the match
+    // are the history from `source` on, followed by slack (the dictionary's, or checked above)
+    // and, in a ring, at least `WILDCOPY_OVERLENGTH` bytes past the destination so that chunks
+    // do not alias their stores; the rest starts at `out_base`, `match_start + from_ext` bytes
+    // before its destination (distinct allocations).
     unsafe {
         copy16(op, lit);
         copy16(op.add(16), lit.add(16));
         if literal_length > 32 {
             kernel.wildcopy(op.add(32), lit.add(32), literal_length - 32);
         }
-        kernel.wildcopy(literals_end, padded.as_ptr().add(source), from_dictionary);
-        if match_length > from_dictionary {
-            let rest = literals_end.add(from_dictionary);
-            kernel.copy_match(
-                rest,
-                match_start + from_dictionary,
-                match_length - from_dictionary,
-            );
+        kernel.wildcopy(literals_end, ext_source.add(source), from_ext);
+        if match_length > from_ext {
+            let rest = literals_end.add(from_ext);
+            kernel.copy_match(rest, match_start + from_ext, match_length - from_ext);
         }
         Ok(Cursor {
             op: literals_end.add(match_length),

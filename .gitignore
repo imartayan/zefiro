@@ -9,3 +9,4 @@ proptest-regressions
 
 ref
 bench-ref
+.DS_Store

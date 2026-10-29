@@ -278,7 +278,8 @@ fn execution_checks_in_libzstd_order() {
 #[test]
 fn matches_reach_the_previous_ring_segment() {
     // Offsets 4, 1, 4 with no literals, as in the test above; the history is the end of
-    // the previous segment (40 bytes), at a safe distance from the new one.
+    // the previous segment, at a distance from the new one that takes the wild copy (16 or
+    // more, and room for its slack after the history) or the exact path.
     let block = rle_block(3, (0, 0, 0), &[]);
     let mut state = SequencesState::new();
     let (nb_seq, stream) = state.read_header(&block).unwrap();
@@ -288,18 +289,31 @@ fn matches_reach_the_previous_ring_segment() {
         len,
         in_input: false,
     };
-    for end in 9..=70 {
-        let mut ring = [b'.'; 70];
-        ring[36..40].copy_from_slice(b"6789");
-        let place = Placement {
-            range: 0..end,
-            ext: Ext::Ring(40),
-            total_history: 0,
-        };
-        let block_end = state.execute_block(nb_seq, stream, &literals, &mut ring, &place);
-        assert_eq!(block_end, Ok(9), "end {end}");
-        assert_eq!(&ring[..9], b"678888888", "end {end}");
-        state.repeat_offsets = INITIAL_REPEAT_OFFSETS;
+    for (size, ext_len) in [
+        (70, 40),
+        (200, 100),
+        (200, 196),
+        (200, 18),
+        (200, 35),
+        (200, 36),
+    ] {
+        for end in 9..=size {
+            let mut ring = vec![b'.'; size];
+            ring[ext_len - 4..ext_len].copy_from_slice(b"6789");
+            let place = Placement {
+                range: 0..end,
+                ext: Ext::Ring(ext_len),
+                total_history: 0,
+            };
+            let block_end = state.execute_block(nb_seq, stream, &literals, &mut ring, &place);
+            assert_eq!(block_end, Ok(9), "size {size} ext {ext_len} end {end}");
+            assert_eq!(
+                &ring[..9],
+                b"678888888",
+                "size {size} ext {ext_len} end {end}"
+            );
+            state.repeat_offsets = INITIAL_REPEAT_OFFSETS;
+        }
     }
     // Four bytes back from the start of a segment, with 3 bytes of the previous one.
     let place = Placement {

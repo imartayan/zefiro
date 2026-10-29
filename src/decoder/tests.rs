@@ -128,7 +128,7 @@ fn trailing_bytes() {
     );
     // After a good frame a bad magic is a size error, not a prefix error.
     assert_eq!(
-        decode(&[a.clone(), vec![0; 9]].concat(), 2),
+        decode(&[a, vec![0; 9]].concat(), 2),
         Err(Error::SrcSizeWrong)
     );
     assert_eq!(decode(&[0; 9], 0), Err(Error::PrefixUnknown));

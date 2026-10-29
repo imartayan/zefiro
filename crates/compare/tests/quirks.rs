@@ -112,7 +112,7 @@ fn c_huffman_accepts(literals: &[u8], regenerated: usize, flags: c_int) -> bool 
     unsafe { zstd_sys::ZSTD_isError(size) == 0 }
 }
 
-fn bmi2_flag() -> c_int {
+const fn bmi2_flag() -> c_int {
     #[cfg(target_arch = "x86_64")]
     if std::is_x86_feature_detected!("bmi2") {
         return 1;
@@ -390,7 +390,7 @@ fn trailing_input_verdicts() {
         check.outcome(&skippable[..len], 10, "truncated skippable frame");
     }
     check.ok(
-        &[skippable.clone(), good.clone()].concat(),
+        &[skippable.clone(), good].concat(),
         10,
         3,
         "skippable then frame",
@@ -448,7 +448,7 @@ fn repeated_tables_need_a_previous_block() {
     // After a block with RLE tables (literal length 0, repeat offset, match 3): fine.
     let first = compressed_block(false, &raw_literals(b""), &rle_sequences(1, (0, 0, 0), &[]));
     check.ok(
-        &frame(WINDOW_1K, false, &[history.clone(), first, repeat], &[]),
+        &frame(WINDOW_1K, false, &[history, first, repeat], &[]),
         100,
         14,
         "repeated FSE tables",

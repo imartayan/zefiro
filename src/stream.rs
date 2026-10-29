@@ -97,7 +97,7 @@ pub(crate) struct Stream {
 }
 
 impl Stream {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             phase: Phase::Init,
             stage: Stage::End,
@@ -126,7 +126,7 @@ impl Stream {
         }
     }
 
-    pub(crate) fn reset(&mut self) {
+    pub(crate) const fn reset(&mut self) {
         self.phase = Phase::Init;
     }
 
@@ -528,7 +528,7 @@ impl Decoder {
 }
 
 // The stage after the last block.
-fn frame_end(checksum: bool) -> (Stage, usize) {
+const fn frame_end(checksum: bool) -> (Stage, usize) {
     if checksum {
         (Stage::Checksum, CHECKSUM_SIZE)
     } else {

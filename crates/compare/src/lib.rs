@@ -1,6 +1,8 @@
 //! Oracle (C libzstd through `zstd-sys`), corpora and compression helpers for
 //! differential tests, fuzzing and benchmarks.
 
+#![allow(clippy::redundant_pub_crate)]
+
 pub mod bench;
 mod compress;
 mod corpus;

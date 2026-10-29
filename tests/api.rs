@@ -92,7 +92,7 @@ fn decompress_empty_and_broken_inputs() {
         Err(Error::SrcSizeWrong)
     );
     // A frame stating a size it does not have.
-    let mut lying = sized.clone();
+    let mut lying = sized;
     lying[5..9].copy_from_slice(&400u32.to_le_bytes());
     assert_eq!(decompress(&lying, 1000), Err(Error::CorruptionDetected));
     // A huge stated size is refused before anything is allocated.
@@ -122,7 +122,7 @@ fn reader_reads_all_frames_through_any_buffer() {
         );
     }
     // Small reads.
-    let mut reader = Reader::new(Cursor::new(input.clone()));
+    let mut reader = Reader::new(Cursor::new(input));
     let mut output = Vec::new();
     let mut piece = [0; 13];
     loop {

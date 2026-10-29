@@ -25,10 +25,11 @@ pub struct Run {
     pub outcome: Outcome,
 }
 
-/// Calls `step` with pieces of `input` and output buffers whose sizes cycle through
-/// `in_sizes` and `out_sizes` (all non-zero), re-offering what was not consumed, until
-/// the input is used and the output is drained. Input ending inside a frame is
-/// `Err(Code::Truncated)`.
+/// Calls `step` with pieces of `input` and output buffers.
+///
+/// Buffer sizes cycle through `in_sizes` and `out_sizes` (all non-zero), re-offering what
+/// was not consumed, until the input is used and the output is drained. Input ending
+/// inside a frame is `Err(Code::Truncated)`.
 pub fn run_stream(
     mut step: impl FnMut(&[u8], &mut [u8]) -> Result<Step, Code>,
     input: &[u8],

@@ -54,11 +54,11 @@ impl EltX1 {
         Self(u16::from(nb_bits) | u16::from(byte) << 8)
     }
 
-    fn nb_bits(self) -> u8 {
+    const fn nb_bits(self) -> u8 {
         self.0 as u8
     }
 
-    fn byte(self) -> u8 {
+    const fn byte(self) -> u8 {
         (self.0 >> 8) as u8
     }
 }
@@ -384,7 +384,7 @@ struct Lanes([u64; 2]);
 
 impl Lanes {
     #[inline(always)]
-    fn add(&mut self, weight: u8, count: u64) {
+    const fn add(&mut self, weight: u8, count: u64) {
         let word = count << (8 * (weight & 7));
         let (low, high) = if weight & 8 == 0 {
             (word, 0)
@@ -412,7 +412,7 @@ impl Lanes {
     }
 
     #[inline(always)]
-    fn get(&self, weight: u8) -> u8 {
+    const fn get(&self, weight: u8) -> u8 {
         let half = if weight & 8 == 0 {
             self.0[0]
         } else {
@@ -553,10 +553,10 @@ fn fill_weight(
 ) {
     let length = 1 << (table_log - nb_bits);
     let cell = |symbol: u8| {
-        let (sequence, count) = match first {
-            None => (u16::from(symbol), 1),
-            Some(first) => (u16::from(first) + (u16::from(symbol) << 8), 2),
-        };
+        let (sequence, count) = first.map_or_else(
+            || (u16::from(symbol), 1),
+            |first| (u16::from(first) + (u16::from(symbol) << 8), 2),
+        );
         EltX2 {
             sequence,
             nb_bits: nb_bits as u8,
@@ -771,7 +771,7 @@ fn read_u64(src: &[u8], at: usize) -> u64 {
 // Refill of one fast-loop stream: move back by the whole bytes consumed.
 // Safety: `*ip - consumed / 8 + 8 <= src.len()`, with no underflow.
 #[inline(always)]
-unsafe fn reload_fast_stream(src: &[u8], ip: &mut usize, bits: &mut u64) {
+const unsafe fn reload_fast_stream(src: &[u8], ip: &mut usize, bits: &mut u64) {
     let consumed = bits.trailing_zeros();
     *ip -= (consumed >> 3) as usize;
     // SAFETY: the caller's.

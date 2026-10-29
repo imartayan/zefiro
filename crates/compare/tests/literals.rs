@@ -107,12 +107,13 @@ fn literal_data(seed: u64, len: usize, alphabet: usize, geometric: bool, offset:
     let mut rng = Rng::with_seed(seed);
     (0..len)
         .map(|_| {
-            let mut symbol = rng.usize(..alphabet);
-            if geometric {
-                symbol = (rng.usize(..alphabet))
+            let symbol = if geometric {
+                (rng.usize(..alphabet))
                     .min(rng.usize(..alphabet))
-                    .min(rng.usize(..alphabet));
-            }
+                    .min(rng.usize(..alphabet))
+            } else {
+                rng.usize(..alphabet)
+            };
             (symbol as u8).wrapping_add(offset)
         })
         .collect()
@@ -164,7 +165,7 @@ fn size_with_jitter(sizes: &'static [usize]) -> impl Strategy<Value = usize> {
     (prop::sample::select(sizes), 0usize..20).prop_map(|(size, jitter)| size + jitter)
 }
 
-fn edit_byte(byte: &mut u8, operation: u8, operand: u8) {
+const fn edit_byte(byte: &mut u8, operation: u8, operand: u8) {
     *byte = match operation {
         0 => *byte ^ 1 << (operand % 8),
         1 => byte.wrapping_add(1),

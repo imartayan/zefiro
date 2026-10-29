@@ -233,7 +233,7 @@ impl<const N: usize> FseTable<N> {
     }
 
     // Single-cell table for RLE mode: always the same symbol, no state bits.
-    pub(crate) fn set_rle(&mut self, base_value: u32, nb_additional_bits: u8) {
+    pub(crate) const fn set_rle(&mut self, base_value: u32, nb_additional_bits: u8) {
         self.table_log = 0;
         self.entries[0] = SeqSymbol {
             next_state: 0,

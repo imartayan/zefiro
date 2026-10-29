@@ -71,8 +71,9 @@ pub fn test_corpus() -> Vec<Sample> {
         .collect()
 }
 
-/// Synthetic corpus plus every file under `$ZSTD_CORPUS_DIR` or `corpus/` (the
-/// output of `scripts/fetch-corpus.sh`), named by their relative path.
+/// Synthetic corpus plus every file under `$ZSTD_CORPUS_DIR` or `corpus/`.
+///
+/// Files (the output of `scripts/fetch-corpus.sh`) are named by their relative path.
 /// `corpus/decodecorpus` is left out: it holds frames, not raw data.
 #[must_use]
 pub fn corpus() -> Vec<Sample> {

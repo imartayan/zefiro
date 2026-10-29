@@ -3,8 +3,9 @@ use std::io::{self, BufRead, Read};
 use crate::Decoder;
 
 /// Decompresses the zstd frames read from `R`, one after the other like `zstd -d`
-/// (skippable frames are skipped). Input ending inside a frame is
-/// `ErrorKind::UnexpectedEof`, invalid input `ErrorKind::InvalidData`.
+/// (skippable frames are skipped).
+///
+/// Input ending inside a frame is `ErrorKind::UnexpectedEof`, invalid input `ErrorKind::InvalidData`.
 #[derive(Debug)]
 pub struct Reader<R: BufRead> {
     inner: R,
@@ -21,7 +22,7 @@ impl<R: BufRead> Reader<R> {
 
     /// A reader of the frames in `inner` that uses the settings of `decoder`
     /// (dictionary, window limit). A stream in progress in `decoder` is abandoned.
-    pub fn with_decoder(mut decoder: Decoder, inner: R) -> Self {
+    pub const fn with_decoder(mut decoder: Decoder, inner: R) -> Self {
         decoder.stream.reset();
         Self {
             inner,

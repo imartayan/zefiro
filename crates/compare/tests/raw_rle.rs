@@ -98,10 +98,11 @@ fn random_frame(rng: &mut Rng) -> (Vec<u8>, usize) {
     }
 
     let single_segment = one_in(rng, 2);
-    let mut content_size_code = rng.u64(..) % 4;
-    if single_segment && content.len() > 255 {
-        content_size_code = 1 + rng.u64(..) % 3;
-    }
+    let content_size_code = if single_segment && content.len() > 255 {
+        1 + rng.u64(..) % 3
+    } else {
+        rng.u64(..) % 4
+    };
     let dict_id_code = if one_in(rng, 6) {
         1 + rng.u64(..) % 3
     } else {

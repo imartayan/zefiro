@@ -53,7 +53,7 @@ pub(crate) struct BlockHeader {
 }
 
 impl BlockHeader {
-    pub(crate) fn input_size(self) -> usize {
+    pub(crate) const fn input_size(self) -> usize {
         match self.block_type {
             BlockType::Rle => 1,
             _ => self.size as usize,
@@ -215,7 +215,7 @@ pub(crate) fn find_frame_size(src: &[u8]) -> Result<usize, Error> {
 }
 
 // `ZSTD_getcBlockSize`.
-pub(crate) fn parse_block_header(src: &[u8]) -> Result<BlockHeader, Error> {
+pub(crate) const fn parse_block_header(src: &[u8]) -> Result<BlockHeader, Error> {
     let Some(&[b0, b1, b2]) = src.first_chunk::<BLOCK_HEADER_SIZE>() else {
         return Err(Error::SrcSizeWrong);
     };

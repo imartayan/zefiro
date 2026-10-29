@@ -103,7 +103,7 @@ impl Kernel for ShortOffsets {
 
 // Needs 16 bytes readable at `src`, writable at `dst`, disjoint.
 #[inline(always)]
-pub(crate) unsafe fn copy16(dst: *mut u8, src: *const u8) {
+pub(crate) const unsafe fn copy16(dst: *mut u8, src: *const u8) {
     // SAFETY: the caller's.
     unsafe { core::ptr::copy_nonoverlapping(src, dst, CHUNK) }
 }

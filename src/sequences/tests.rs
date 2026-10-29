@@ -31,11 +31,10 @@ fn stream(fields: &[(u64, u32)]) -> Vec<u8> {
     }
     let padding = (8 - bits.len() % 8) % 8;
     let bits = [vec![false; padding], bits].concat();
-    let bytes: Vec<u8> = bits
-        .chunks(8)
+    bits.chunks(8)
         .map(|chunk| chunk.iter().fold(0, |byte, &bit| byte << 1 | u8::from(bit)))
-        .collect();
-    bytes.into_iter().rev().collect()
+        .rev()
+        .collect()
 }
 
 // A block of `count` sequences whose three tables are RLE with the given
@@ -491,7 +490,7 @@ fn prefetch_loop_agrees_with_the_regular_loop_except_for_the_stream_end() {
     }
     // A stream with one bit too many: the prefetch loop reports it before it executes the
     // last 8 sequences, so it hides an output overflow there (libzstd does the same).
-    let mut extra = fields.clone();
+    let mut extra = fields;
     extra.push((0, 1));
     let block = rle_block(12, (2, 3, 0), &extra);
     assert_eq!(

@@ -111,23 +111,23 @@ impl<'a> BitReader<'a> {
     // True when a sequence of up to 89 bits (two reloads of at most 6 bytes each) cannot
     // reach the start of the stream: all its reloads are full ones.
     #[inline(always)]
-    pub(crate) fn has_room_for_sequence(&self) -> bool {
+    pub(crate) const fn has_room_for_sequence(&self) -> bool {
         self.ptr >= 16
     }
 
     // `nb_bits` in 1..=63 (0 gives garbage).
     #[inline(always)]
-    pub(crate) fn look_bits_fast(&self, nb_bits: u32) -> u64 {
+    pub(crate) const fn look_bits_fast(&self, nb_bits: u32) -> u64 {
         (self.container << (self.bits_consumed & 63)) >> (CONTAINER_BITS.wrapping_sub(nb_bits) & 63)
     }
 
     #[inline(always)]
-    pub(crate) fn unread(&self) -> u64 {
+    pub(crate) const fn unread(&self) -> u64 {
         self.container << (self.bits_consumed & 63)
     }
 
     #[inline(always)]
-    pub(crate) fn skip(&mut self, nb_bits: u32) {
+    pub(crate) const fn skip(&mut self, nb_bits: u32) {
         self.bits_consumed += nb_bits;
     }
 
@@ -147,7 +147,7 @@ impl<'a> BitReader<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn read_bits_fast(&mut self, nb_bits: u32) -> u64 {
+    pub(crate) const fn read_bits_fast(&mut self, nb_bits: u32) -> u64 {
         let value = self.look_bits_fast(nb_bits);
         self.skip(nb_bits);
         value
@@ -172,11 +172,12 @@ impl<'a> BitReader<'a> {
             };
         }
         let mut nb_bytes = (self.bits_consumed >> 3) as usize;
-        let mut status = Status::Unfinished;
-        if nb_bytes > self.ptr {
+        let status = if nb_bytes > self.ptr {
             nb_bytes = self.ptr;
-            status = Status::EndOfBuffer;
-        }
+            Status::EndOfBuffer
+        } else {
+            Status::Unfinished
+        };
         self.ptr -= nb_bytes;
         self.bits_consumed -= nb_bytes as u32 * 8;
         self.container = read_container(self.src, self.ptr);
@@ -196,7 +197,7 @@ impl<'a> BitReader<'a> {
 
     // True when every bit, end mark included, was consumed exactly.
     #[inline(always)]
-    pub(crate) fn end_of_stream(&self) -> bool {
+    pub(crate) const fn end_of_stream(&self) -> bool {
         self.ptr == 0 && self.bits_consumed == CONTAINER_BITS
     }
 

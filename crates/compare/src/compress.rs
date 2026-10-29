@@ -144,8 +144,9 @@ pub fn train_dictionary(samples: &[&[u8]], capacity: usize) -> Option<Vec<u8>> {
     Some(dictionary)
 }
 
-/// One frame with `dictionary` (`ZSTD_CCtx_loadDictionary`, content type auto), writing
-/// its ID in the frame header if it has one and `write_id`. `None` if the encoder refuses
+/// One frame with `dictionary` (`ZSTD_CCtx_loadDictionary`, content type auto).
+///
+/// Writes its ID in the frame header if it has one and `write_id`. `None` if the encoder refuses
 /// the dictionary (or fails on this input).
 #[must_use]
 pub fn compress_with_dictionary(

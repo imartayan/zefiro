@@ -614,7 +614,7 @@ impl<'a> SequenceDecoder<'a> {
 // the block (never when streaming) cap it at `block_size_max` plus the slack, other
 // placements leave the capacity. The error when a split block catches up with its
 // literals is not modelled.
-pub(crate) fn block_output_limit(
+pub(crate) const fn block_output_limit(
     capacity: usize,
     literals: &Literals<'_>,
     block_size_max: usize,
@@ -944,7 +944,7 @@ fn copy_match(
 }
 
 impl Ext<'_> {
-    pub(crate) fn len(self) -> usize {
+    pub(crate) const fn len(self) -> usize {
         match self {
             Self::Ring(len) => len,
             Self::Dict(padded) => padded.len() - WILDCOPY_OVERLENGTH,

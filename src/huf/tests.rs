@@ -816,7 +816,7 @@ mod against_libzstd {
                     for length in lengths {
                         // Random bytes, or all ones and all zeros: shortest and longest codes.
                         let fill = rng.choice([None, Some(0x00), Some(0xFF)]).unwrap();
-                        body.extend((0..length).map(|_| fill.unwrap_or(rng.u8(..))));
+                        body.extend((0..length).map(|_| fill.unwrap_or_else(|| rng.u8(..))));
                     }
                     body
                 };

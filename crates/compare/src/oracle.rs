@@ -278,8 +278,9 @@ pub fn assert_agree(ours: &Outcome, theirs: &Outcome, what: &str) {
     }
 }
 
-/// Checks that the linked C library is the oracle PLAN.md D1 and 4.2-6 expect:
-/// libzstd 1.5.7, no legacy support, dictionary ID check enabled (it is
+/// Checks that the linked C library is the expected oracle.
+///
+/// Specifically: libzstd 1.5.7, no legacy support, dictionary ID check enabled (it is
 /// compiled out in `FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION` builds).
 pub fn check_oracle_build() {
     // SAFETY: no preconditions.

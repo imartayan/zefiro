@@ -68,8 +68,9 @@ pub fn backward_stream(fields: &[(u64, u32)]) -> Vec<u8> {
     bytes.rev().collect()
 }
 
-/// A sequences section of `count` sequences whose three tables are RLE with
-/// the given symbols (literal length, offset, match length code): the states
+/// A sequences section of `count` sequences whose three tables are RLE.
+///
+/// Uses the given symbols (literal length, offset, match length code): the states
 /// need no bits, only the extra bits in `fields` (reading order, per sequence:
 /// offset, match length, literal length).
 #[must_use]

@@ -187,6 +187,9 @@ impl LiteralsState {
         let dst = grow(&mut self.buffer, len);
         let stream = &src[header_size..header_size + compressed_len];
         let result = if repeat_table {
+            if !single_stream {
+                self.table.scale_x1_for_four_streams();
+            }
             let table = match &self.dictionary {
                 Some(dictionary) if self.in_dictionary => &dictionary.entropy().unwrap().huffman,
                 _ => &self.table,

@@ -13,14 +13,15 @@ const MAX_SYMBOLS: usize = 256;
 const WEIGHTS_TABLE_LOG_MAX: u32 = 6;
 // Largest table of any use (the sequence tables).
 const SPREAD_MAX: usize = 512;
-const IDENTITY: [u32; MAX_SYMBOLS] = {
-    let mut identity = [0; MAX_SYMBOLS];
+// Symbol of each weights cell: above 15 is read as 15, which `read_stats` rejects like 13.
+const WEIGHT_OF_SYMBOL: [u32; MAX_SYMBOLS] = {
+    let mut weights = [0; MAX_SYMBOLS];
     let mut symbol = 0;
     while symbol < MAX_SYMBOLS {
-        identity[symbol] = symbol as u32;
+        weights[symbol] = if symbol < 15 { symbol as u32 } else { 15 };
         symbol += 1;
     }
-    identity
+    weights
 };
 
 pub(crate) const LL_MAX_SYMBOL: u32 = 35;
@@ -382,7 +383,12 @@ pub(crate) fn decompress_weights(dst: &mut [u8], src: &[u8]) -> Result<usize, Er
     }
     let mut table = FseTable::<{ 1 << WEIGHTS_TABLE_LOG_MAX }>::EMPTY;
     let counts = &norm[..=ncount.max_symbol as usize];
-    table.build(counts, ncount.table_log, &IDENTITY, &[0; MAX_SYMBOLS]);
+    table.build(
+        counts,
+        ncount.table_log,
+        &WEIGHT_OF_SYMBOL,
+        &[0; MAX_SYMBOLS],
+    );
     let mut bits = BitReader::new(&src[ncount.bytes_read..]).ok_or(Error::CorruptionDetected)?;
 
     let init_state = |bits: &mut BitReader<'_>| {

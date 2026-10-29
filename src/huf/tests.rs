@@ -88,6 +88,31 @@ fn x1_table_of_a_known_tree() {
 }
 
 #[test]
+fn single_stream_x1_table_is_small_and_scales_to_the_fast_table() {
+    let mut rng = Rng::with_seed(0x51_17);
+    for _ in 0..miri_scaled(200) {
+        let max_depth = rng.choice([2, 5, 9, 11, 12]).unwrap();
+        let tree = TestTree::random(&mut rng, max_depth);
+        let (mut small, mut scaled) = (HufTable::boxed(), HufTable::boxed());
+        assert_eq!(
+            small.read_x1_at_least(&tree.header, 0),
+            Ok(tree.header.len())
+        );
+        assert_eq!(scaled.read_x1(&tree.header), Ok(tree.header.len()));
+        assert_eq!(small.table_log, tree.depth);
+        small.scale_x1_for_four_streams();
+        assert_eq!(small.table_log, scaled.table_log);
+        let cells = 1 << scaled.table_log;
+        assert_eq!(
+            small.x1[..cells],
+            scaled.x1[..cells],
+            "depth {}",
+            tree.depth
+        );
+    }
+}
+
+#[test]
 fn x2_pairs_agree_with_the_x1_codes() {
     // Every cell of the X2 table starts with the X1 symbol and, for pairs,
     // continues with the X1 symbol of the following bits.
@@ -648,6 +673,16 @@ mod against_libzstd {
             if rng.bool() {
                 src[0] = 0x80 + rng.usize(..128) as u8;
             }
+            check(&src);
+        }
+        // FSE headers (table log 5, symbols 1 and 17): table log 5 allows symbols up to 91, and
+        // only weights above 12 are an error.
+        let ncount = [16, 136, 241, 239, 7];
+        for _ in 0..2000 {
+            let length = 3 + rng.usize(..8);
+            let mut src = vec![(ncount.len() + length) as u8];
+            src.extend(ncount);
+            src.extend((0..length).map(|_| rng.u8(..)));
             check(&src);
         }
         assert!(

@@ -147,6 +147,12 @@ impl HufTable {
 
     // `HUF_readDTableX1_wksp`: returns the bytes of the tree description.
     pub(crate) fn read_x1(&mut self, src: &[u8]) -> Result<usize, Error> {
+        self.read_x1_at_least(src, FAST_TABLE_LOG)
+    }
+
+    // The table is scaled to at least `min_log` bits: the 4-stream fast path needs
+    // `FAST_TABLE_LOG`, a single stream decodes any size, and a smaller one is cheaper to fill.
+    fn read_x1_at_least(&mut self, src: &[u8], min_log: u32) -> Result<usize, Error> {
         let mut weights = [0; SYMBOL_COUNT];
         let mut rank_stats = [0; RANK_COUNT];
         let stats = read_stats(&mut weights, &mut rank_stats, src)?;
@@ -154,7 +160,7 @@ impl HufTable {
 
         // A symbol of weight w owns 2^(w-1) cells of the scaled table and reads
         // tree_log + 1 - w bits.
-        let table_log = stats.table_log.max(FAST_TABLE_LOG);
+        let table_log = stats.table_log.max(min_log);
         let scale = (table_log - stats.table_log) as usize;
         let mut cells = &mut self.x1[..1 << table_log];
         for w in 1..=stats.table_log as usize {
@@ -225,11 +231,24 @@ impl HufTable {
         dst: &mut [u8],
         src: &[u8],
     ) -> Result<(), Error> {
-        let tree_size = self.read_x1(src)?;
+        let tree_size = self.read_x1_at_least(src, 0)?;
         if tree_size >= src.len() {
             return Err(Error::SrcSizeWrong);
         }
         self.decompress_1x(dst, &src[tree_size..])
+    }
+
+    // Brings an X1 table built for a single stream to `FAST_TABLE_LOG`, in place from the end.
+    pub(crate) fn scale_x1_for_four_streams(&mut self) {
+        if self.is_x2 || self.table_log >= FAST_TABLE_LOG {
+            return;
+        }
+        let scale = FAST_TABLE_LOG - self.table_log;
+        for index in (0..1usize << self.table_log).rev() {
+            let cell = self.x1[index];
+            self.x1[index << scale..(index + 1) << scale].fill(cell);
+        }
+        self.table_log = FAST_TABLE_LOG;
     }
 
     // `HUF_decompress4X_hufOnly_wksp`: picks the table kind by `select_decoder`.
@@ -320,15 +339,13 @@ fn read_stats(
             fse::decompress_weights(&mut weights[..SYMBOL_COUNT - 1], &src[1..=header_size])?;
     }
 
-    if weights[..weight_count]
-        .iter()
-        .any(|&weight| u32::from(weight) > TABLE_LOG_MAX)
-    {
-        return Err(Error::CorruptionDetected);
-    }
+    // Weights are below 16: raw nibbles, or FSE symbols that `WEIGHT_OF_SYMBOL` clamps.
     let mut counts = Lanes::default();
     for &weight in &weights[..weight_count] {
         counts.bump(weight);
+    }
+    if (TABLE_LOG_MAX as u8 + 1..16).any(|weight| counts.get(weight) != 0) {
+        return Err(Error::CorruptionDetected);
     }
     let mut weight_total = 0u32;
     for (weight, rank) in rank_stats.iter_mut().enumerate() {

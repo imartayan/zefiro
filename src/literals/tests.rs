@@ -122,6 +122,30 @@ fn treeless_literals_need_a_table_from_the_same_frame() {
 }
 
 #[test]
+fn four_streams_reuse_a_table_built_for_one_stream() {
+    let mut rng = Rng::with_seed(78);
+    let mut state = LiteralsState::new();
+    let tree = TestTree::random(&mut rng, 6);
+    let (short, long) = (
+        tree.random_data(&mut rng, 100),
+        tree.random_data(&mut rng, 300),
+    );
+    let first = huffman_section(
+        2,
+        0,
+        100,
+        &[tree.header.clone(), tree.encode_stream(&short)].concat(),
+    );
+    let treeless = huffman_section(3, 1, 300, &tree.encode_four_streams(&long));
+    assert_same(&decode(&mut state, &first).unwrap().0, &short, "one stream");
+    assert_same(
+        &decode(&mut state, &treeless).unwrap().0,
+        &long,
+        "four streams",
+    );
+}
+
+#[test]
 fn checks_come_in_libzstds_order() {
     let mut rng = Rng::with_seed(99);
     let tree = TestTree::random(&mut rng, 8);

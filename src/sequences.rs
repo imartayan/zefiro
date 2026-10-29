@@ -744,20 +744,13 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
             .offset_from_unsigned(lit)
     };
     if literal_length > literals_left || literals_end.wrapping_add(match_length) > limits.fast_end {
-        return exec_sequence_end(
-            sequence.literal_length,
-            sequence.match_length,
-            sequence.offset,
-            cursor.op,
-            cursor.lit,
-            limits,
-        );
+        return exec_sequence_end(sequence, cursor, limits);
     }
     // The segment start bounds the history, except in a ring (`EXT`).
     if offset > literals_end.addr() - limits.out_base.addr() {
         return if EXT {
             // SAFETY: the checks above are the ones `exec_sequence_ext` needs.
-            unsafe { exec_sequence_ext(literal_length, match_length, offset, op, lit, limits) }
+            unsafe { exec_sequence_ext(sequence, cursor, limits) }
         } else {
             Err(Error::CorruptionDetected)
         };
@@ -798,13 +791,16 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
 #[cold]
 #[inline(never)]
 unsafe fn exec_sequence_ext(
-    literal_length: usize,
-    match_length: usize,
-    offset: usize,
-    op: *mut u8,
-    lit: *const u8,
+    sequence: Sequence,
+    cursor: Cursor,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
+    let Sequence {
+        literal_length,
+        match_length,
+        offset,
+    } = sequence;
+    let Cursor { op, lit } = cursor;
     let literals_end = op.wrapping_add(literal_length);
     let match_start = literals_end.addr() - limits.out_base.addr();
     let ext_len = limits.ext.len();
@@ -820,7 +816,7 @@ unsafe fn exec_sequence_ext(
             // copies, and reads past the ring are out: the exact path.
             let clobbered = source < match_start + WILDCOPY_OVERLENGTH;
             if clobbered || source + from_ext + WILDCOPY_OVERLENGTH > limits.out_len {
-                return exec_sequence_end(literal_length, match_length, offset, op, lit, limits);
+                return exec_sequence_end(sequence, cursor, limits);
             }
             limits.out_base.cast_const()
         }
@@ -853,19 +849,10 @@ unsafe fn exec_sequence_ext(
 #[cold]
 #[inline(never)]
 fn exec_sequence_end(
-    literal_length: usize,
-    match_length: usize,
-    offset: usize,
-    op: *mut u8,
-    lit: *const u8,
+    sequence: Sequence,
+    cursor: Cursor,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
-    let sequence = Sequence {
-        literal_length,
-        match_length,
-        offset,
-    };
-    let cursor = Cursor { op, lit };
     // SAFETY: `out_base` and `out_len` come from the `&mut` slice of `run_sequences`, which is not
     // used while this one lives.
     let out = unsafe { core::slice::from_raw_parts_mut(limits.out_base, limits.out_len) };

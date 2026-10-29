@@ -21,10 +21,28 @@ snapshot)
 run)
   shift
   [ -d "$base" ] || { echo "no snapshot, run: scripts/ab.sh snapshot" >&2; exit 1; }
-  (cd "$base" && cargo build --release -q -p compare --bin bench)
-  cargo build --release -q -p compare --bin bench
-  bin_base=$root/$base/target/release/bench
-  bin_cur=$root/target/release/bench
+  if [ -n "${AB_INPLACE:-}" ]; then
+    # Both binaries are built from this directory, swapping src/ in and out: the path is part
+    # of the crate hash, and a build elsewhere can differ by 3 to 5% on small frames.
+    stash=target/ab/cur-src
+    mkdir -p target/ab/bin
+    rsync -a --delete src/ "$stash/"
+    trap 'rsync -a --delete "$root/$stash/" "$root/src/" && find "$root/src" -type f -exec touch {} +' EXIT
+    # touch: rsync keeps the old mtimes, and cargo would not rebuild.
+    rsync -a --delete "$base/src/" src/ && find src -type f -exec touch {} +
+    cargo build --release -q -p compare --bin bench
+    cp target/release/bench target/ab/bin/base
+    rsync -a --delete "$stash/" src/ && find src -type f -exec touch {} +
+    cargo build --release -q -p compare --bin bench
+    cp target/release/bench target/ab/bin/cur
+    bin_base=$root/target/ab/bin/base
+    bin_cur=$root/target/ab/bin/cur
+  else
+    (cd "$base" && cargo build --release -q -p compare --bin bench)
+    cargo build --release -q -p compare --bin bench
+    bin_base=$root/$base/target/release/bench
+    bin_cur=$root/target/release/bench
+  fi
   rm -rf "$runs" && mkdir -p "$runs"
   for i in $(seq 1 "${AB_ALTERNATIONS:-5}"); do
     # Swap the order every alternation to cancel position bias.

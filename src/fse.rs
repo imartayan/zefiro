@@ -79,11 +79,32 @@ pub(crate) static OF_DEFAULT_TABLE: FseTable<256> =
 // A decoding table cell: after reading `nb_bits`, the next state is
 // `next_state + bits` and the decoded value is `base_value + extra bits`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C, align(8))]
 pub(crate) struct SeqSymbol {
     pub(crate) next_state: u16,
     pub(crate) nb_additional_bits: u8,
     pub(crate) nb_bits: u8,
     pub(crate) base_value: u32,
+}
+
+impl SeqSymbol {
+    // The cell read as one 64-bit word, the fields taken apart by shifts: they stay in one register
+    // instead of four, which spills less in the sequence loop.
+    #[inline(always)]
+    pub(crate) fn load_whole(self) -> Self {
+        if cfg!(target_endian = "little") {
+            // SAFETY: `SeqSymbol` is `repr(C)`, 8 bytes without padding.
+            let word = unsafe { core::mem::transmute::<Self, u64>(self) };
+            Self {
+                next_state: word as u16,
+                nb_additional_bits: (word >> 16) as u8,
+                nb_bits: (word >> 24) as u8,
+                base_value: (word >> 32) as u32,
+            }
+        } else {
+            self
+        }
+    }
 }
 
 // `1 << table_log` cells used out of `N`.

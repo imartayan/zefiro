@@ -422,12 +422,12 @@ impl SequencesState {
             let mut position = range.start;
             let ahead = nb_seq.min(LOOKAHEAD);
             for (index, slot) in queue.iter_mut().enumerate().take(ahead) {
-                let sequence = decoder.next(index == nb_seq - 1);
+                let sequence = decoder.next::<false>(index == nb_seq - 1);
                 position = prefetch_match(position, sequence, &limits);
                 *slot = sequence;
             }
             for index in ahead..nb_seq {
-                let sequence = decoder.next(index == nb_seq - 1);
+                let sequence = decoder.next::<false>(index == nb_seq - 1);
                 let oldest = queue[index % LOOKAHEAD];
                 // SAFETY: `limits` and `cursor` describe `out` and `literals`, as `exec_sequence` needs.
                 cursor = unsafe { exec_sequence::<K, EXT>(kernel, oldest, cursor, &limits) }?;
@@ -444,15 +444,32 @@ impl SequencesState {
                 }?;
             }
         } else {
-            let mut current = decoder.next(nb_seq == 1);
-            for remaining in (1..nb_seq).rev() {
-                let following = decoder.next(remaining == 1);
-                // SAFETY: `limits` and `cursor` describe `out` and `literals`, as `exec_sequence` needs.
+            // Decoding ahead wins on AArch64 (+3.6%) but spills on x86-64 (15 registers):
+            // decoding right before the execution gains 7% there.
+            if cfg!(target_arch = "x86_64") {
+                let mut remaining = nb_seq;
+                while remaining > 1 && decoder.bits.has_room_for_sequence() {
+                    let sequence = decoder.next::<true>(false);
+                    // SAFETY: `limits` and `cursor` describe `out` and `literals`, as `exec_sequence` needs.
+                    cursor = unsafe { exec_sequence::<K, EXT>(kernel, sequence, cursor, &limits) }?;
+                    remaining -= 1;
+                }
+                for remaining in (1..=remaining).rev() {
+                    let sequence = decoder.next::<false>(remaining == 1);
+                    // SAFETY: as above.
+                    cursor = unsafe { exec_sequence::<K, EXT>(kernel, sequence, cursor, &limits) }?;
+                }
+            } else {
+                let mut current = decoder.next::<false>(nb_seq == 1);
+                for remaining in (1..nb_seq).rev() {
+                    let following = decoder.next::<false>(remaining == 1);
+                    // SAFETY: as above.
+                    cursor = unsafe { exec_sequence::<K, EXT>(kernel, current, cursor, &limits) }?;
+                    current = following;
+                }
+                // SAFETY: as above.
                 cursor = unsafe { exec_sequence::<K, EXT>(kernel, current, cursor, &limits) }?;
-                current = following;
             }
-            // SAFETY: as above.
-            cursor = unsafe { exec_sequence::<K, EXT>(kernel, current, cursor, &limits) }?;
             if !decoder.bits.end_of_stream() {
                 return Err(Error::CorruptionDetected);
             }
@@ -490,13 +507,30 @@ impl<'a> SequenceDecoder<'a> {
 
     // The last sequence leaves the FSE states alone, as the stream ends with it.
     #[inline(always)]
-    fn next(&mut self, last: bool) -> Sequence {
+    fn next<const IN_CONTAINER: bool>(&mut self, last: bool) -> Sequence {
         let tables = self.tables;
-        let (ll, ml, of) = (
-            tables.ll.entries[self.state_ll],
-            tables.ml.entries[self.state_ml],
-            tables.of.entries[self.state_of],
-        );
+        let (ll, ml, of) = if IN_CONTAINER {
+            // SAFETY: a state is below `1 << table_log <= N`: initial states have `table_log`
+            // bits, and every cell of a built table has `next_state + (1 << nb_bits)` within it.
+            unsafe {
+                debug_assert!(
+                    self.state_ll < LL_CELLS
+                        && self.state_ml < ML_CELLS
+                        && self.state_of < OF_CELLS
+                );
+                (
+                    tables.ll.entries.get_unchecked(self.state_ll).load_whole(),
+                    tables.ml.entries.get_unchecked(self.state_ml).load_whole(),
+                    tables.of.entries.get_unchecked(self.state_of).load_whole(),
+                )
+            }
+        } else {
+            (
+                tables.ll.entries[self.state_ll],
+                tables.ml.entries[self.state_ml],
+                tables.of.entries[self.state_of],
+            )
+        };
         let bits = &mut self.bits;
         // Every offset code consumes exactly its extra bits (none: garbage, unused): read them
         // first so that the offset logic, a coin flip on some data, follows the state update.
@@ -507,7 +541,12 @@ impl<'a> SequenceDecoder<'a> {
         }
         let total_bits = ll.nb_additional_bits + ml.nb_additional_bits + of.nb_additional_bits;
         if total_bits >= RELOAD_THRESHOLD_BITS {
-            bits.reload();
+            if IN_CONTAINER {
+                // SAFETY: the caller checked `has_room_for_sequence`: this reload is a full one.
+                unsafe { bits.reload_unchecked() };
+            } else {
+                bits.reload();
+            }
         }
         let mut literal_length = ll.base_value as usize;
         if ll.nb_additional_bits > 0 {
@@ -515,16 +554,24 @@ impl<'a> SequenceDecoder<'a> {
         }
 
         if !last {
-            let [ll_bits, ml_bits, of_bits] = bits.read_bits_x3([
+            let widths = [
                 u32::from(ll.nb_bits),
                 u32::from(ml.nb_bits),
                 u32::from(of.nb_bits),
-            ]);
+            ];
+            let [ll_bits, ml_bits, of_bits] = if IN_CONTAINER {
+                bits.read_bits_x3_in_container(widths)
+            } else {
+                bits.read_bits_x3(widths)
+            };
             self.state_ll = usize::from(ll.next_state) + ll_bits as usize;
             self.state_ml = usize::from(ml.next_state) + ml_bits as usize;
             self.state_of = usize::from(of.next_state) + of_bits as usize;
+            if IN_CONTAINER {
+                // SAFETY: as above.
+                unsafe { bits.reload_unchecked() };
             // SAFETY: at most 7 bits were consumed after the previous reload, and 63 since.
-            if unsafe { bits.reload_fast() } == Status::Overflow {
+            } else if unsafe { bits.reload_fast() } == Status::Overflow {
                 bits.reload();
             }
         }
@@ -697,13 +744,20 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
             .offset_from_unsigned(lit)
     };
     if literal_length > literals_left || literals_end.wrapping_add(match_length) > limits.fast_end {
-        return exec_sequence_end(sequence, cursor, limits);
+        return exec_sequence_end(
+            sequence.literal_length,
+            sequence.match_length,
+            sequence.offset,
+            cursor.op,
+            cursor.lit,
+            limits,
+        );
     }
     // The segment start bounds the history, except in a ring (`EXT`).
     if offset > literals_end.addr() - limits.out_base.addr() {
         return if EXT {
             // SAFETY: the checks above are the ones `exec_sequence_ext` needs.
-            unsafe { exec_sequence_ext(sequence, cursor, limits) }
+            unsafe { exec_sequence_ext(literal_length, match_length, offset, op, lit, limits) }
         } else {
             Err(Error::CorruptionDetected)
         };
@@ -714,9 +768,18 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
     // output are distinct allocations.
     unsafe {
         copy16(op, lit);
-        copy16(op.add(16), lit.add(16));
-        if literal_length > 32 {
-            kernel.wildcopy(op.add(32), lit.add(32), literal_length - 32);
+        if cfg!(target_arch = "x86_64") {
+            if literal_length > 16 {
+                copy16(op.add(16), lit.add(16));
+                if literal_length > 32 {
+                    kernel.wildcopy(op.add(32), lit.add(32), literal_length - 32);
+                }
+            }
+        } else {
+            copy16(op.add(16), lit.add(16));
+            if literal_length > 32 {
+                kernel.wildcopy(op.add(32), lit.add(32), literal_length - 32);
+            }
         }
         op = literals_end;
         kernel.copy_match(op, offset, match_length);
@@ -735,16 +798,13 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
 #[cold]
 #[inline(never)]
 unsafe fn exec_sequence_ext(
-    sequence: Sequence,
-    cursor: Cursor,
+    literal_length: usize,
+    match_length: usize,
+    offset: usize,
+    op: *mut u8,
+    lit: *const u8,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
-    let Sequence {
-        literal_length,
-        match_length,
-        offset,
-    } = sequence;
-    let Cursor { op, lit } = cursor;
     let literals_end = op.wrapping_add(literal_length);
     let match_start = literals_end.addr() - limits.out_base.addr();
     let ext_len = limits.ext.len();
@@ -760,7 +820,7 @@ unsafe fn exec_sequence_ext(
             // copies, and reads past the ring are out: the exact path.
             let clobbered = source < match_start + WILDCOPY_OVERLENGTH;
             if clobbered || source + from_ext + WILDCOPY_OVERLENGTH > limits.out_len {
-                return exec_sequence_end(sequence, cursor, limits);
+                return exec_sequence_end(literal_length, match_length, offset, op, lit, limits);
             }
             limits.out_base.cast_const()
         }
@@ -793,10 +853,19 @@ unsafe fn exec_sequence_ext(
 #[cold]
 #[inline(never)]
 fn exec_sequence_end(
-    sequence: Sequence,
-    cursor: Cursor,
+    literal_length: usize,
+    match_length: usize,
+    offset: usize,
+    op: *mut u8,
+    lit: *const u8,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
+    let sequence = Sequence {
+        literal_length,
+        match_length,
+        offset,
+    };
+    let cursor = Cursor { op, lit };
     // SAFETY: `out_base` and `out_len` come from the `&mut` slice of `run_sequences`, which is not
     // used while this one lives.
     let out = unsafe { core::slice::from_raw_parts_mut(limits.out_base, limits.out_len) };

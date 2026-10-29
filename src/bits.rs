@@ -92,6 +92,29 @@ impl<'a> BitReader<'a> {
         values
     }
 
+    // `read_bits_x3` without the mask, as `((container << at) >> 1) >> (63 - n)`: equal to it
+    // when `bits_consumed` plus the three widths is at most 64, garbage differs beyond.
+    #[inline(always)]
+    pub(crate) fn read_bits_x3_in_container(&mut self, nb_bits: [u32; 3]) -> [u64; 3] {
+        let [first, second, third] = nb_bits;
+        let consumed = self.bits_consumed;
+        let look = |at: u32, nb_bits: u32| ((self.container << (at & 63)) >> 1) >> (!nb_bits & 63);
+        let values = [
+            look(consumed, first),
+            look(consumed + first, second),
+            look(consumed + first + second, third),
+        ];
+        self.bits_consumed = consumed + (first + second + third);
+        values
+    }
+
+    // True when a sequence of up to 89 bits (two reloads of at most 6 bytes each) cannot
+    // reach the start of the stream: all its reloads are full ones.
+    #[inline(always)]
+    pub(crate) fn has_room_for_sequence(&self) -> bool {
+        self.ptr >= 16
+    }
+
     // `nb_bits` in 1..=63 (0 gives garbage).
     #[inline(always)]
     pub(crate) fn look_bits_fast(&self, nb_bits: u32) -> u64 {
@@ -179,7 +202,7 @@ impl<'a> BitReader<'a> {
 
     // Needs `bits_consumed <= 64` and `ptr >= 8`.
     #[inline(always)]
-    unsafe fn reload_unchecked(&mut self) -> Status {
+    pub(crate) unsafe fn reload_unchecked(&mut self) -> Status {
         debug_assert!(self.bits_consumed <= CONTAINER_BITS && self.ptr >= CONTAINER_BYTES);
         self.ptr -= (self.bits_consumed >> 3) as usize;
         self.bits_consumed &= 7;

@@ -116,4 +116,6 @@ the same comparisons under libFuzzer.
 ## Performance
 
 On an Apple M1, one-shot decompression runs at 0.98x to 1.03x of libzstd on the
-benchmark files (levels 1 to 19). x86 has not been measured yet.
+benchmark files (levels 1 to 19). On an AMD Zen 3 (x86-64, libzstd with its BMI2
+assembly Huffman loop) it runs at 0.96x to 1.12x on the benchmark files, with the same
+verdicts.

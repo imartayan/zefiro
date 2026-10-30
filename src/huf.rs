@@ -814,16 +814,20 @@ impl Variant for X1 {
         end: usize,
         bits: &mut BitReader<'_>,
     ) {
+        let dst_ptr = dst.as_mut_ptr();
+        let shift = 64 - log;
         if end - op > 3 {
             while bits.reload() == Status::Unfinished && op + 3 < end {
                 // Shifting the bits aside keeps the consumed count out of the lookup chain.
                 let mut unread = bits.unread();
                 let mut consumed = 0;
-                for byte in &mut dst[op..op + 4] {
-                    let elt = table[(unread >> (64 - log)) as usize];
+                for i in 0..4 {
+                    // SAFETY: shift >= 52 so the shifted index is < TABLE_SIZE.
+                    let elt = unsafe { *table.get_unchecked((unread >> shift) as usize) };
                     unread <<= elt.nb_bits() & 0x3F;
                     consumed += u32::from(elt.nb_bits());
-                    *byte = elt.byte();
+                    // SAFETY: op + 3 < end <= dst.len(), so op + i < dst.len().
+                    unsafe { *dst_ptr.add(op + i) = elt.byte() };
                 }
                 bits.skip(consumed);
                 op += 4;
@@ -833,7 +837,11 @@ impl Variant for X1 {
         }
         // The stream holds no more data to load: the rest comes from the container.
         while op < end {
-            op += Self::decode_symbol(table, log, dst, op, bits);
+            // SAFETY: log <= TABLE_LOG_MAX = 12, so look_bits_fast(log) < TABLE_SIZE.
+            let elt = unsafe { *table.get_unchecked(bits.look_bits_fast(log) as usize) };
+            bits.skip(u32::from(elt.nb_bits()));
+            dst[op] = elt.byte();
+            op += 1;
         }
     }
 
@@ -890,7 +898,8 @@ impl Variant for X2 {
         op: usize,
         bits: &mut BitReader<'_>,
     ) -> usize {
-        let elt = table[bits.look_bits_fast(log) as usize];
+        // SAFETY: log <= TABLE_LOG_MAX = 12, so look_bits_fast(log) < TABLE_SIZE.
+        let elt = unsafe { *table.get_unchecked(bits.look_bits_fast(log) as usize) };
         dst[op..op + 2].copy_from_slice(&elt.sequence.to_le_bytes());
         bits.skip(u32::from(elt.nb_bits));
         usize::from(elt.length)
@@ -904,6 +913,7 @@ impl Variant for X2 {
         end: usize,
         bits: &mut BitReader<'_>,
     ) {
+        let dst_ptr = dst.as_mut_ptr();
         if end - op >= 8 {
             // Up to 10 bytes per reload with a table log of 11, else up to 8.
             let (symbols, room) = if log <= FAST_TABLE_LOG {
@@ -911,27 +921,66 @@ impl Variant for X2 {
             } else {
                 (4, 8)
             };
+            let shift = 64 - log;
             while bits.reload() == Status::Unfinished && op + room <= end {
+                let mut unread = bits.unread();
+                let mut consumed = 0;
                 for _ in 0..symbols {
-                    op += Self::decode_symbol(table, log, dst, op, bits);
+                    // SAFETY: shift >= 52 so the shifted index is < TABLE_SIZE.
+                    let elt = unsafe { *table.get_unchecked((unread >> shift) as usize) };
+                    // SAFETY: op + room <= end <= dst.len(), each iteration writes 2 bytes <= room.
+                    unsafe {
+                        dst_ptr
+                            .add(op)
+                            .cast::<[u8; 2]>()
+                            .write_unaligned(elt.sequence.to_le_bytes());
+                    }
+                    unread <<= elt.nb_bits & 0x3F;
+                    consumed += u32::from(elt.nb_bits);
+                    op += usize::from(elt.length);
                 }
+                bits.skip(consumed);
             }
         } else {
             bits.reload();
         }
         // Closer to the end: up to 2 bytes at a time.
         if end - op >= 2 {
+            let shift = 64 - log;
             while bits.reload() == Status::Unfinished && op + 2 <= end {
-                op += Self::decode_symbol(table, log, dst, op, bits);
+                let unread = bits.unread();
+                // SAFETY: shift >= 52.
+                let elt = unsafe { *table.get_unchecked((unread >> shift) as usize) };
+                // SAFETY: op + 2 <= end <= dst.len().
+                unsafe {
+                    dst_ptr
+                        .add(op)
+                        .cast::<[u8; 2]>()
+                        .write_unaligned(elt.sequence.to_le_bytes());
+                }
+                bits.skip(u32::from(elt.nb_bits));
+                op += usize::from(elt.length);
             }
             while op + 2 <= end {
-                op += Self::decode_symbol(table, log, dst, op, bits);
+                let unread = bits.unread();
+                // SAFETY: shift >= 52.
+                let elt = unsafe { *table.get_unchecked((unread >> shift) as usize) };
+                // SAFETY: op + 2 <= end <= dst.len().
+                unsafe {
+                    dst_ptr
+                        .add(op)
+                        .cast::<[u8; 2]>()
+                        .write_unaligned(elt.sequence.to_le_bytes());
+                }
+                bits.skip(u32::from(elt.nb_bits));
+                op += usize::from(elt.length);
             }
         }
         if op < end {
             // `HUF_decodeLastSymbolX2`: one byte left, but a pair entry still
             // consumes the bits of both symbols (clamped).
-            let elt = table[bits.look_bits_fast(log) as usize];
+            // SAFETY: log <= 12, so look_bits_fast(log) < TABLE_SIZE.
+            let elt = unsafe { *table.get_unchecked(bits.look_bits_fast(log) as usize) };
             dst[op] = elt.sequence as u8;
             if elt.length == 1 {
                 bits.skip(u32::from(elt.nb_bits));

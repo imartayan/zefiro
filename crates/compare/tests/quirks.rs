@@ -112,7 +112,7 @@ fn c_huffman_accepts(literals: &[u8], regenerated: usize, flags: c_int) -> bool 
     unsafe { zstd_sys::ZSTD_isError(size) == 0 }
 }
 
-const fn bmi2_flag() -> c_int {
+fn bmi2_flag() -> c_int {
     #[cfg(target_arch = "x86_64")]
     if std::is_x86_feature_detected!("bmi2") {
         return 1;

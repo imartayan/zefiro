@@ -11,10 +11,27 @@ publish = false
 workspace = true
 
 [dev-dependencies]
-proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
+proptest = { version = "1", default-features = false, features = [
+    "std",
+    "bit-set",
+] }
 
 [dependencies]
 fastrand = { version = "2.5.0", default-features = false }
 zefiro = { path = "../.." }
-# C libzstd 1.5.7, static, no legacy support (PLAN.md D1).
-zstd-sys = { version = "2.1.2", default-features = false, features = ["experimental", "zdict_builder"] }
+# C libzstd 1.5.7, static, no legacy support
+zstd-sys = { version = "2.1.2", default-features = false, features = [
+    "experimental",
+    "zdict_builder",
+] }
+# Competitor decompressors for public benchmarks
+rust-zstd = { version = "0.4.1", default-features = false }
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
+zrip = { version = "0.8.13", default-features = false, features = [
+    "frame",
+    "std",
+] }
+mzstd = { version = "0.2.8", default-features = false, features = [
+    "decompression",
+    "std",
+] }

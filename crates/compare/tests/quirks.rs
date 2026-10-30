@@ -1,4 +1,4 @@
-//! One test per item of PLAN.md section 4.2: libzstd behaviors that differ
+//! Tests for libzstd quirks: behaviors that differ
 //! from the plain format, each reproduced with a hand-made or found input and
 //! compared with libzstd (plus the expected verdict, to prove the quirk).
 
@@ -75,7 +75,7 @@ fn huffman_four_stream_sections(frame: &[u8]) -> Vec<(LiteralsSection, usize)> {
         .collect()
 }
 
-// 4.2-1 and 4.2-2. HUF_selectDecoder is the only source of X1 versus X2 here.
+// Huffman X1 vs X2 selection: HUF_selectDecoder is the only source of X1 versus X2 here.
 unsafe extern "C" {
     fn HUF_selectDecoder(dst_size: usize, src_size: usize) -> u32;
     fn HUF_decompress4X_hufOnly_wksp(
@@ -203,7 +203,7 @@ fn huffman_decoder_selection_and_double_symbol_tables() {
     assert!(selected.iter().all(|&n| n > 10), "{selected:?}");
 }
 
-// 4.2-3
+// Window and frame boundaries for sequence offsets.
 #[test]
 fn offsets_reach_the_frame_start_not_the_window_or_earlier_frames() {
     let mut check = Check::new();
@@ -250,7 +250,7 @@ fn offset_zero_and_a_repeat_that_becomes_zero_are_corruption() {
     }
 }
 
-// 4.2-4. Literal length 1, offset code 2 (1 + 2 bits), match length code 52 (65539 + 16 bits).
+// Literal length 1, offset code 2 (1 + 2 bits), match length code 52 (65539 + 16 bits).
 // The block regenerates more than the 128 KiB limit, which libzstd only enforces when its
 // literals sit in the output past the block.
 #[test]
@@ -299,7 +299,7 @@ fn block_output_limit_depends_on_where_libzstd_puts_literals() {
     );
 }
 
-// 4.2-5
+// Content size mismatch comes before the checksum.
 #[test]
 fn content_size_mismatch_comes_before_the_checksum() {
     let mut check = Check::new();
@@ -334,7 +334,7 @@ fn content_size_mismatch_comes_before_the_checksum() {
     }
 }
 
-// 4.2-6
+// Frame header verdicts.
 #[test]
 fn frame_header_verdicts() {
     let mut check = Check::new();
@@ -362,7 +362,7 @@ fn frame_header_verdicts() {
     check.ok(&with(0x20, &[3]), 10, 3, "no dictionary id");
 }
 
-// 4.2-7
+// Trailing input verdicts.
 #[test]
 fn trailing_input_verdicts() {
     let mut check = Check::new();
@@ -398,7 +398,7 @@ fn trailing_input_verdicts() {
     check.ok(&skippable, 10, 0, "skippable only");
 }
 
-// 4.2-8
+// Four stream literals need six bytes.
 #[test]
 fn four_stream_literals_need_six_bytes() {
     let mut check = Check::new();
@@ -418,7 +418,7 @@ fn four_stream_literals_need_six_bytes() {
     }
 }
 
-// 4.2-9
+// Sequences with no output room are DstSizeTooSmall.
 #[test]
 fn sequences_with_no_output_room_are_dst_size_too_small() {
     let mut check = Check::new();
@@ -427,7 +427,7 @@ fn sequences_with_no_output_room_are_dst_size_too_small() {
     check.err(&input, 1, Code::CorruptionDetected, "capacity 1");
 }
 
-// 4.2-10
+// Repeated tables need a previous block.
 #[test]
 fn repeated_tables_need_a_previous_block() {
     let mut check = Check::new();
@@ -463,12 +463,12 @@ fn repeated_tables_need_a_previous_block() {
     );
 }
 
-// 4.2-11 needs the streaming decoder.
+// Streaming single-pass shortcut needs the streaming decoder.
 #[test]
-#[ignore = "phase 4: streaming single-pass shortcut"]
+#[ignore = "streaming single-pass shortcut"]
 fn streaming_single_pass_shortcut() {}
 
-// 4.2-12
+// Raw and RLE blocks ignore the block size limit.
 #[test]
 fn raw_and_rle_blocks_ignore_the_block_size_limit() {
     let mut check = Check::new();
@@ -495,7 +495,7 @@ fn raw_and_rle_blocks_ignore_the_block_size_limit() {
     check.ok(&unknown, 10, 3, "unknown content size");
 }
 
-// 4.2-13. Weights 12, 11, ..., 1 (a tree of depths 1 to 12, the last symbol implied) with an
+// Weights 12, 11, ..., 1 (a tree of depths 1 to 12, the last symbol implied) with an
 // FSE header of table log 6 describing symbols 0..=12: libzstd's workspace allows 0..=11 only.
 #[test]
 fn huffman_weights_header_is_limited_by_libzstd_workspace() {
@@ -579,7 +579,7 @@ fn huffman_weights_header_is_limited_by_libzstd_workspace() {
     );
 }
 
-// 4.2-14
+// Literals size checks come in libzstd order.
 #[test]
 fn literals_size_checks_come_in_libzstd_order() {
     let mut check = Check::new();

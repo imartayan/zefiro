@@ -610,7 +610,7 @@ impl<'a> SequenceDecoder<'a> {
     }
 }
 
-// Where libzstd stops a block's output (4.2-4): literals stored in the output past
+// Where libzstd stops a block's output: literals stored in the output past
 // the block (never when streaming) cap it at `block_size_max` plus the slack, other
 // placements leave the capacity. The error when a split block catches up with its
 // literals is not modelled.

@@ -2,7 +2,7 @@
 # A/B of the one-shot bench on tree copies (git is not needed).
 #   scripts/ab.sh snapshot          copy the tree to target/ab/base
 #   scripts/ab.sh run [bench args]  alternate base and current, print best-of-N deltas
-# AB_ALTERNATIONS (default 5) runs of each tree, `--rounds 3 --impl ours` unless
+# AB_ALTERNATIONS (default 5) runs of each tree, `--rounds 3 --impl zefiro` unless
 # the bench args override. corpus/ and the frame cache are shared by both trees.
 set -euo pipefail
 
@@ -15,7 +15,7 @@ export ZSTD_CORPUS_DIR=$root/corpus ZSTD_BENCH_CACHE=$root/target/bench-cache
 case "${1:-}" in
 snapshot)
   mkdir -p "$base"
-  rsync -a --delete --exclude /target/ --exclude /corpus/ --exclude /ref/ \
+  rsync -a --delete --exclude /target/ --exclude /corpus/ \
     --exclude /fuzz/ --exclude /.git/ ./ "$base/"
   ;;
 run)
@@ -49,7 +49,7 @@ run)
     if (( i % 2 )); then order="base cur"; else order="cur base"; fi
     for tree in $order; do
       bin=bin_$tree
-      "${!bin}" --rounds 3 --impl ours "$@" --tsv "$runs/$tree-$i.tsv" 2>"$runs/$tree-$i.log" \
+      "${!bin}" --rounds 3 --impl zefiro "$@" --tsv "$runs/$tree-$i.tsv" 2>"$runs/$tree-$i.log" \
         || { cat "$runs/$tree-$i.log" >&2; exit 1; }
     done
     echo "alternation $i done" >&2

@@ -1,13 +1,13 @@
 //! Huffman literals decoder, a port of libzstd's `huf_decompress.c`: the tree
 //! description (`HUF_readStats`), the X1 (one symbol per lookup) and X2 (up to
 //! two) tables, 1-stream and 4-stream bodies, and the 4-stream fast path whose
-//! stop points and lenient verdicts (PLAN.md 4.2-1, 4.2-2) are reproduced.
+//! stop points and lenient verdicts are reproduced.
 //!
 //! Errors inside a literals block are all `corruption_detected` for the caller,
 //! so this module reports `CorruptionDetected` (or `SrcSizeWrong` and
 //! `DstSizeTooSmall` where C does, for easy comparison) and nothing finer.
 //! Bounds are checked by indexing; the invariants that make them redundant are
-//! noted at the fast loops for the unsafe pass of Phase 2.
+//! noted at the fast loops.
 
 use crate::bits::{BitReader, Status};
 use crate::error::Error;
@@ -930,7 +930,7 @@ impl Variant for X2 {
         }
         if op < end {
             // `HUF_decodeLastSymbolX2`: one byte left, but a pair entry still
-            // consumes the bits of both symbols (clamped, PLAN.md 4.2-2).
+            // consumes the bits of both symbols (clamped).
             let elt = table[bits.look_bits_fast(log) as usize];
             dst[op] = elt.sequence as u8;
             if elt.length == 1 {

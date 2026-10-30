@@ -1,5 +1,4 @@
-//! Benchmark cases, timing and reports (PLAN.md section 7). `bin/bench.rs`
-//! and `bench-ref` both call [`main`], the latter with extra implementations.
+//! Benchmark cases, timing and reports.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -34,10 +33,19 @@ const LONG_PIECE: Range<usize> = 256..4096;
 const STREAM_CHUNK: usize = 128 << 10;
 const DEFAULT_ROUNDS: usize = 10;
 const MIB: f64 = (1 << 20) as f64;
-// Ratios to libzstd within this band are printed without color.
+// Ratios to zstd within this band are printed without color.
 const RATIO_NOISE: f64 = 0.02;
 const USAGE: &str = "usage: bench [--rounds N] [--case SUBSTRING[,..]] [--impl NAME[,..]] \
-                     [--file PATH.zst[,..]] [--tsv FILE] [--md] (a colored table on a terminal, TSV otherwise)";
+                     [--file PATH.zst[,..]] [--tsv FILE] [--md] [--exhaustive] [--speed] (a colored table on a terminal, TSV otherwise)";
+
+const DEFAULT_IMPLS: &[&str] = &[
+    "zefiro",
+    "zstd",
+    "rust-zstd",
+    "zefiro-stream",
+    "zstd-stream",
+    "rust-zstd-stream",
+];
 
 /// A one-shot decompressor under test, owning its context and output buffer.
 pub trait Impl {
@@ -74,6 +82,8 @@ struct Args {
     files: Vec<PathBuf>,
     tsv: Option<PathBuf>,
     markdown: bool,
+    exhaustive: bool,
+    speed: bool,
 }
 
 struct Ours {
@@ -81,14 +91,14 @@ struct Ours {
     buffer: Vec<u8>,
 }
 
-struct LibzstdImpl {
+struct ZstdImpl {
     dctx: Libzstd,
     buffer: Vec<u8>,
 }
 
-/// `Ours` and `LibzstdImpl` through their streaming calls.
+/// `Ours` and `ZstdImpl` through their streaming calls.
 struct OursStream(Ours);
-struct LibzstdStream(LibzstdImpl);
+struct ZstdStream(ZstdImpl);
 
 impl Case {
     fn new(name: String, source: Arc<Vec<u8>>, frames: Vec<(Vec<u8>, Range<usize>)>) -> Self {
@@ -131,11 +141,21 @@ impl Args {
             files: Vec::new(),
             tsv: None,
             markdown: false,
+            exhaustive: false,
+            speed: false,
         };
         let mut argv = std::env::args().skip(1);
         while let Some(flag) = argv.next() {
             if flag == "--md" {
                 args.markdown = true;
+                continue;
+            }
+            if flag == "--exhaustive" {
+                args.exhaustive = true;
+                continue;
+            }
+            if flag == "--speed" || flag == "--mibs" {
+                args.speed = true;
                 continue;
             }
             let Some(value) = argv.next() else {
@@ -169,7 +189,7 @@ impl Ours {
 
 impl Impl for Ours {
     fn name(&self) -> &'static str {
-        "ours"
+        "zefiro"
     }
 
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
@@ -177,7 +197,7 @@ impl Impl for Ours {
         let written = self
             .decoder
             .decompress_into(input, &mut self.buffer[..size])
-            .expect("ours failed");
+            .expect("zefiro failed");
         &self.buffer[..written]
     }
 
@@ -187,7 +207,7 @@ impl Impl for Ours {
     }
 }
 
-impl LibzstdImpl {
+impl ZstdImpl {
     fn new() -> Self {
         Self {
             dctx: Libzstd::new(),
@@ -196,9 +216,9 @@ impl LibzstdImpl {
     }
 }
 
-impl Impl for LibzstdImpl {
+impl Impl for ZstdImpl {
     fn name(&self) -> &'static str {
-        "libzstd"
+        "zstd"
     }
 
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
@@ -206,7 +226,7 @@ impl Impl for LibzstdImpl {
         let written = self
             .dctx
             .decompress_into(input, &mut self.buffer[..size])
-            .expect("libzstd failed");
+            .expect("zstd failed");
         &self.buffer[..written]
     }
 
@@ -219,7 +239,7 @@ impl Impl for LibzstdImpl {
 
 impl Impl for OursStream {
     fn name(&self) -> &'static str {
-        "ours-stream"
+        "zefiro-stream"
     }
 
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
@@ -228,7 +248,7 @@ impl Impl for OursStream {
         let written = stream_frame(input, &mut buffer[..size], |input, output| {
             let progress = decoder
                 .decompress_stream(input, output)
-                .expect("ours failed");
+                .expect("zefiro failed");
             Step {
                 consumed: progress.consumed,
                 written: progress.written,
@@ -243,16 +263,16 @@ impl Impl for OursStream {
     }
 }
 
-impl Impl for LibzstdStream {
+impl Impl for ZstdStream {
     fn name(&self) -> &'static str {
-        "libzstd-stream"
+        "zstd-stream"
     }
 
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
-        let LibzstdImpl { dctx, buffer } = &mut self.0;
+        let ZstdImpl { dctx, buffer } = &mut self.0;
         grow(buffer, size);
         let written = stream_frame(input, &mut buffer[..size], |input, output| {
-            dctx.stream_step(input, output).expect("libzstd failed")
+            dctx.stream_step(input, output).expect("zstd failed")
         });
         &buffer[..written]
     }
@@ -286,24 +306,467 @@ fn stream_frame(
     }
 }
 
+struct RustZstdOneShot {
+    decompressor: rust_zstd::Decompressor,
+    buffer: Vec<u8>,
+}
+
+impl RustZstdOneShot {
+    fn new() -> Self {
+        Self {
+            decompressor: rust_zstd::Decompressor::new(),
+            buffer: Vec::new(),
+        }
+    }
+}
+
+impl Impl for RustZstdOneShot {
+    fn name(&self) -> &'static str {
+        "rust-zstd"
+    }
+
+    fn decompress(&mut self, input: &[u8], _size: usize) -> &[u8] {
+        self.decompressor
+            .decompress_into(input, &mut self.buffer)
+            .expect("rust-zstd failed");
+        &self.buffer
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        let parsed = (!dictionary.is_empty())
+            .then(|| rust_zstd::decode::DecodeDict::new(dictionary).expect("dictionary refused"));
+        self.decompressor.set_dict(parsed.as_ref());
+    }
+}
+
+struct RustZstdStream {
+    decompressor: rust_zstd::Decompressor,
+    buffer: Vec<u8>,
+}
+
+impl RustZstdStream {
+    fn new() -> Self {
+        Self {
+            decompressor: rust_zstd::Decompressor::new(),
+            buffer: Vec::new(),
+        }
+    }
+}
+
+impl Impl for RustZstdStream {
+    fn name(&self) -> &'static str {
+        "rust-zstd-stream"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        grow(&mut self.buffer, size);
+        let (mut consumed, mut written) = (0, 0);
+        loop {
+            let input_end = input.len().min(consumed + STREAM_CHUNK);
+            let output_end = size.min(written + STREAM_CHUNK);
+            let (mut src_pos, mut dst_pos) = (0, 0);
+            let hint = self
+                .decompressor
+                .decompress_stream(
+                    &input[consumed..input_end],
+                    &mut src_pos,
+                    &mut self.buffer[written..output_end],
+                    &mut dst_pos,
+                )
+                .expect("rust-zstd stream failed");
+            consumed += src_pos;
+            written += dst_pos;
+            assert!(src_pos + dst_pos > 0, "no progress");
+            if hint == 0 {
+                return &self.buffer[..written];
+            }
+        }
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        let parsed = (!dictionary.is_empty())
+            .then(|| rust_zstd::decode::DecodeDict::new(dictionary).expect("dictionary refused"));
+        self.decompressor.set_dict(parsed.as_ref());
+    }
+}
+
+struct RuzstdImpl {
+    decoder: ruzstd::decoding::FrameDecoder,
+    buffer: Vec<u8>,
+    dictionary: Vec<u8>,
+}
+
+impl RuzstdImpl {
+    fn new() -> Self {
+        Self {
+            decoder: ruzstd::decoding::FrameDecoder::new(),
+            buffer: Vec::new(),
+            dictionary: Vec::new(),
+        }
+    }
+}
+
+impl Impl for RuzstdImpl {
+    fn name(&self) -> &'static str {
+        "ruzstd"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        grow(&mut self.buffer, size);
+        let mut empty = &[][..];
+        let _ = self.decoder.reset(&mut empty);
+        if !self.dictionary.is_empty()
+            && let Ok(d) = ruzstd::decoding::Dictionary::decode_dict(&self.dictionary)
+        {
+            let _ = self.decoder.add_dict(d);
+        }
+        self.decoder
+            .decode_all(input, &mut self.buffer[..size])
+            .expect("ruzstd failed");
+        &self.buffer[..size]
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.dictionary.clear();
+        self.dictionary.extend_from_slice(dictionary);
+        self.decoder = ruzstd::decoding::FrameDecoder::new();
+        if !dictionary.is_empty()
+            && let Ok(d) = ruzstd::decoding::Dictionary::decode_dict(dictionary)
+        {
+            let _ = self.decoder.add_dict(d);
+        }
+    }
+}
+
+struct RuzstdStream {
+    decoder: ruzstd::decoding::FrameDecoder,
+    buffer: Vec<u8>,
+    dictionary: Vec<u8>,
+}
+
+impl RuzstdStream {
+    fn new() -> Self {
+        Self {
+            decoder: ruzstd::decoding::FrameDecoder::new(),
+            buffer: Vec::new(),
+            dictionary: Vec::new(),
+        }
+    }
+}
+
+impl Impl for RuzstdStream {
+    fn name(&self) -> &'static str {
+        "ruzstd-stream"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        use std::io::Read;
+        grow(&mut self.buffer, size);
+        let mut empty = &[][..];
+        let _ = self.decoder.reset(&mut empty);
+        if !self.dictionary.is_empty()
+            && let Ok(d) = ruzstd::decoding::Dictionary::decode_dict(&self.dictionary)
+        {
+            let _ = self.decoder.add_dict(d);
+        }
+        let mut streaming =
+            ruzstd::decoding::StreamingDecoder::new_with_decoder(input, &mut self.decoder)
+                .expect("ruzstd stream failed");
+        let mut written = 0;
+        while written < size {
+            let chunk = (size - written).min(STREAM_CHUNK);
+            let n = streaming
+                .read(&mut self.buffer[written..written + chunk])
+                .expect("ruzstd stream failed");
+            if n == 0 {
+                break;
+            }
+            written += n;
+        }
+        &self.buffer[..written]
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.dictionary.clear();
+        self.dictionary.extend_from_slice(dictionary);
+        self.decoder = ruzstd::decoding::FrameDecoder::new();
+        if !dictionary.is_empty()
+            && let Ok(d) = ruzstd::decoding::Dictionary::decode_dict(dictionary)
+        {
+            let _ = self.decoder.add_dict(d);
+        }
+    }
+}
+
+struct ZripImpl {
+    buffer: Vec<u8>,
+    dictionary: Option<zrip::Dictionary>,
+}
+
+impl ZripImpl {
+    const fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            dictionary: None,
+        }
+    }
+}
+
+impl Impl for ZripImpl {
+    fn name(&self) -> &'static str {
+        "zrip"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        if let Some(ref dict) = self.dictionary {
+            let res = zrip::decompress_with_dict(input, dict).expect("zrip failed");
+            grow(&mut self.buffer, res.len());
+            self.buffer[..res.len()].copy_from_slice(&res);
+            &self.buffer[..res.len()]
+        } else {
+            self.buffer.clear();
+            self.buffer.reserve(size);
+            let written = zrip::decompress_into(input, &mut self.buffer).expect("zrip failed");
+            &self.buffer[..written]
+        }
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.dictionary = if dictionary.is_empty() {
+            None
+        } else {
+            zrip::Dictionary::from_bytes(dictionary).ok()
+        };
+    }
+}
+
+struct ZripStream {
+    buffer: Vec<u8>,
+    dictionary: Option<zrip::Dictionary>,
+}
+
+impl ZripStream {
+    const fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            dictionary: None,
+        }
+    }
+}
+
+impl Impl for ZripStream {
+    fn name(&self) -> &'static str {
+        "zrip-stream"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        use std::io::Read;
+        grow(&mut self.buffer, size);
+        if let Some(ref dict) = self.dictionary {
+            let mut decoder = zrip::FrameDecoder::with_dict(input, dict.clone());
+            let mut written = 0;
+            let mut failed = false;
+            while written < size {
+                let chunk = (size - written).min(STREAM_CHUNK);
+                match decoder.read(&mut self.buffer[written..written + chunk]) {
+                    Ok(0) => break,
+                    Ok(n) => written += n,
+                    Err(_) => {
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            if !failed && written == size {
+                return &self.buffer[..written];
+            }
+            // zrip 0.8.13 has a bug in FrameDecoder::with_dict when window_size < dict.len():
+            // it truncates decode_history to window_size instead of preserving dict history.
+            let res = zrip::decompress_with_dict(input, dict).expect("zrip failed");
+            grow(&mut self.buffer, res.len());
+            self.buffer[..res.len()].copy_from_slice(&res);
+            &self.buffer[..res.len()]
+        } else {
+            let mut decoder = zrip::FrameDecoder::new(input);
+            let mut written = 0;
+            while written < size {
+                let chunk = (size - written).min(STREAM_CHUNK);
+                let n = decoder
+                    .read(&mut self.buffer[written..written + chunk])
+                    .expect("zrip stream failed");
+                if n == 0 {
+                    break;
+                }
+                written += n;
+            }
+            &self.buffer[..written]
+        }
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.dictionary = if dictionary.is_empty() {
+            None
+        } else {
+            zrip::Dictionary::from_bytes(dictionary).ok()
+        };
+    }
+}
+
+struct MzstdImpl {
+    decompressor: mzstd::Decompressor,
+    buffer: Vec<u8>,
+    dictionary: Option<mzstd::dictionary::DecodeDictionary>,
+}
+
+impl MzstdImpl {
+    fn new() -> Self {
+        Self {
+            decompressor: mzstd::Decompressor::default(),
+            buffer: Vec::new(),
+            dictionary: None,
+        }
+    }
+}
+
+impl Impl for MzstdImpl {
+    fn name(&self) -> &'static str {
+        "mzstd"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        grow(&mut self.buffer, size);
+        if let Some(ref dict) = self.dictionary {
+            let written = self
+                .decompressor
+                .decompress_with_dictionary_to_slice(dict, input, &mut self.buffer[..size])
+                .expect("mzstd failed");
+            &self.buffer[..written]
+        } else {
+            let written = self
+                .decompressor
+                .decompress_to_slice(input, &mut self.buffer[..size])
+                .expect("mzstd failed");
+            &self.buffer[..written]
+        }
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.dictionary = if dictionary.is_empty() {
+            None
+        } else {
+            mzstd::dictionary::DecodeDictionary::new(
+                dictionary,
+                mzstd::dictionary::DictionaryContent::Auto,
+            )
+            .ok()
+        };
+    }
+}
+
+struct MzstdStream {
+    decompressor: mzstd::Decompressor,
+    buffer: Vec<u8>,
+    dictionary: Option<mzstd::dictionary::DecodeDictionary>,
+}
+
+impl MzstdStream {
+    fn new() -> Self {
+        Self {
+            decompressor: mzstd::Decompressor::default(),
+            buffer: Vec::new(),
+            dictionary: None,
+        }
+    }
+}
+
+impl Impl for MzstdStream {
+    fn name(&self) -> &'static str {
+        "mzstd-stream"
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        use std::io::Read;
+        grow(&mut self.buffer, size);
+        let mut reader = if let Some(ref dict) = self.dictionary {
+            self.decompressor.reader_with_dictionary(input, dict)
+        } else {
+            self.decompressor.reader(input)
+        };
+        let mut written = 0;
+        while written < size {
+            let chunk = (size - written).min(STREAM_CHUNK);
+            let n = reader
+                .read(&mut self.buffer[written..written + chunk])
+                .expect("mzstd stream failed");
+            if n == 0 {
+                break;
+            }
+            written += n;
+        }
+        &self.buffer[..written]
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.dictionary = if dictionary.is_empty() {
+            None
+        } else {
+            mzstd::dictionary::DecodeDictionary::new(
+                dictionary,
+                mzstd::dictionary::DictionaryContent::Auto,
+            )
+            .ok()
+        };
+    }
+}
+
 /// Runs the benchmark described by the command line; `extra_impls` come after
-/// `ours`, `libzstd` and their streaming versions.
+/// built-in implementations.
 pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
-    let args = Args::parse();
+    let mut args = Args::parse();
     let mut impls: Vec<Box<dyn Impl>> = vec![
         Box::new(Ours::new()),
-        Box::new(LibzstdImpl::new()),
+        Box::new(ZstdImpl::new()),
+        Box::new(RustZstdOneShot::new()),
+        Box::new(RuzstdImpl::new()),
+        Box::new(ZripImpl::new()),
+        Box::new(MzstdImpl::new()),
         Box::new(OursStream(Ours::new())),
-        Box::new(LibzstdStream(LibzstdImpl::new())),
+        Box::new(ZstdStream(ZstdImpl::new())),
+        Box::new(RustZstdStream::new()),
+        Box::new(RuzstdStream::new()),
+        Box::new(ZripStream::new()),
+        Box::new(MzstdStream::new()),
     ];
+
+    // Deduplicate in case extra_impls provides replacement implementations.
+    impls.retain(|imp| !extra_impls.iter().any(|extra| extra.name() == imp.name()));
     impls.extend(extra_impls);
+
+    // Support alias "ours" for "zefiro" and "libzstd" for "zstd".
+    for name in &mut args.impls {
+        if name == "ours" {
+            *name = "zefiro".into();
+        } else if name == "ours-stream" {
+            *name = "zefiro-stream".into();
+        } else if name == "libzstd" {
+            *name = "zstd".into();
+        } else if name == "libzstd-stream" {
+            *name = "zstd-stream".into();
+        }
+    }
+
     for name in &args.impls {
         if !impls.iter().any(|imp| imp.name() == name) {
             let known: Vec<_> = impls.iter().map(|imp| imp.name()).collect();
             usage(&format!("unknown impl {name}, available: {known:?}"));
         }
     }
-    impls.retain(|imp| args.impls.is_empty() || args.impls.iter().any(|n| n == imp.name()));
+
+    if !args.impls.is_empty() {
+        impls.retain(|imp| args.impls.iter().any(|n| n == imp.name()));
+    } else if !args.exhaustive {
+        impls.retain(|imp| DEFAULT_IMPLS.contains(&imp.name()));
+    }
 
     // With `--file` only, the built-in cases are skipped.
     let mut cases = if args.files.is_empty() || !args.cases.is_empty() {
@@ -317,7 +780,10 @@ pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
     if let Some(path) = &args.tsv {
         fs::write(path, &tsv).unwrap_or_else(|e| usage(&format!("{}: {e}", path.display())));
     } else if !args.markdown && std::io::stdout().is_terminal() {
-        print!("{}", pretty(&rows, std::env::var_os("NO_COLOR").is_none()));
+        print!(
+            "{}",
+            pretty(&rows, std::env::var_os("NO_COLOR").is_none(), args.speed)
+        );
     } else if !args.markdown {
         print!("{tsv}");
     }
@@ -485,25 +951,45 @@ pub fn tsv(rows: &[Row]) -> String {
     out
 }
 
-/// One line per case (rows of a case are consecutive): MiB/s of each impl,
-/// then each impl over `libzstd`.
+/// Formats rows as a Markdown table.
+///
+/// One line per case: MiB/s of each impl, then each impl over its mode's `zstd`
+/// baseline.
 #[must_use]
 pub fn markdown(rows: &[Row]) -> String {
     let names = impl_names(rows);
-    let baseline = names.iter().position(|&name| name == "libzstd");
-    let ratio_names: Vec<_> = names
+    let baseline_oneshot = names
+        .iter()
+        .position(|&name| name == "zstd")
+        .or_else(|| names.iter().position(|&name| name == "libzstd"));
+    let baseline_stream = names
+        .iter()
+        .position(|&name| name == "zstd-stream")
+        .or_else(|| names.iter().position(|&name| name == "libzstd-stream"));
+
+    let ratio_columns: Vec<(usize, String, usize)> = names
         .iter()
         .enumerate()
-        .filter(|&(i, _)| Some(i) != baseline)
+        .filter_map(|(i, &name)| {
+            let is_stream = name.ends_with("-stream");
+            let baseline = if is_stream {
+                baseline_stream
+            } else {
+                baseline_oneshot
+            }?;
+            if i == baseline {
+                return None;
+            }
+            let base_name = names[baseline];
+            Some((i, format!("{name}/{base_name}"), baseline))
+        })
         .collect();
 
     let mut out = format!("| case | {} |", names.join(" | "));
     let mut separator = format!("| --- |{}", " ---: |".repeat(names.len()));
-    if baseline.is_some() {
-        for (_, name) in &ratio_names {
-            let _ = write!(out, " {name}/libzstd |");
-            separator += " ---: |";
-        }
+    for (_, header, _) in &ratio_columns {
+        let _ = write!(out, " {header} |");
+        separator += " ---: |";
     }
     let _ = write!(out, "\n{separator}\n");
     for case in rows.chunk_by(|a, b| a.case == b.case) {
@@ -511,26 +997,29 @@ pub fn markdown(rows: &[Row]) -> String {
         for row in case {
             let _ = write!(out, " {:.0} |", row.mib_per_s());
         }
-        if let Some(baseline) = baseline {
-            for &(i, _) in &ratio_names {
-                let _ = write!(
-                    out,
-                    " {:.2} |",
-                    case[i].mib_per_s() / case[baseline].mib_per_s()
-                );
-            }
+        for &(i, _, baseline) in &ratio_columns {
+            let ratio = case[i].mib_per_s() / case[baseline].mib_per_s();
+            let _ = write!(out, " {} |", format_delta(ratio));
         }
         out.push('\n');
     }
     out
 }
 
-/// Aligned table for a terminal, one group per mode (one-shot, then `-stream`):
-/// the MiB/s of `ours`, then every other impl of the mode over its `libzstd`
-/// (green or red outside the noise band), geomeans last.
+fn format_delta(ratio: f64) -> String {
+    let pct = (ratio - 1.0) * 100.0;
+    let pct = if pct.abs() < 0.05 { 0.0 } else { pct };
+    format!("{pct:+.1}%")
+}
+
+/// Aligned table for a terminal.
+///
+/// One group per mode (one-shot, then `-stream`): each impl of the mode over
+/// its `zstd` baseline (green or red outside the noise band), optionally preceded
+/// by the MiB/s of `zefiro` if `speed` is true. Geomeans last.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
-pub fn pretty(rows: &[Row], color: bool) -> String {
+pub fn pretty(rows: &[Row], color: bool, speed: bool) -> String {
     let paint = |text: &str, code: &str| {
         if color && !code.is_empty() {
             format!("\x1b[{code}m{text}\x1b[0m")
@@ -543,22 +1032,26 @@ pub fn pretty(rows: &[Row], color: bool) -> String {
     // (mode, header, impl, baseline): a speed column without baseline, else a ratio.
     let mut columns = Vec::new();
     for (mode, suffix) in [("one-shot", ""), ("stream", "-stream")] {
-        let baseline = index(&format!("libzstd{suffix}"));
+        let baseline =
+            index(&format!("zstd{suffix}")).or_else(|| index(&format!("libzstd{suffix}")));
         let in_mode = names.iter().enumerate().filter(|&(i, name)| {
             name.ends_with("-stream") != suffix.is_empty() && Some(i) != baseline
         });
         for (i, name) in in_mode {
             let short = name.strip_suffix(suffix).unwrap_or(name);
-            if short == "ours" || baseline.is_none() {
+            if (short == "zefiro" || short == "ours" || baseline.is_none())
+                && (speed || baseline.is_none())
+            {
                 columns.push((mode, format!("{short} MiB/s"), i, None));
             }
-            if baseline.is_some() {
-                columns.push((mode, format!("{short}/libzstd"), i, baseline));
+            if let Some(b) = baseline {
+                let base_short = names[b].strip_suffix(suffix).unwrap_or(names[b]);
+                columns.push((mode, format!("{short}/{base_short}"), i, Some(b)));
             }
         }
     }
     let case_width = rows.iter().map(|r| r.case.len()).max().unwrap_or(0).max(7);
-    let widths: Vec<_> = columns.iter().map(|c| c.1.len()).collect();
+    let widths: Vec<_> = columns.iter().map(|c| c.1.len().max(7)).collect();
     let starts_group = |k: usize| k == 0 || columns[k - 1].0 != columns[k].0;
     let gap = |k: usize| if k > 0 && starts_group(k) { 4 } else { 2 };
 
@@ -599,7 +1092,7 @@ pub fn pretty(rows: &[Row], color: bool) -> String {
                 Some(b) => {
                     let ratio = speeds[i] / speeds[b];
                     log_ratio_sums[k] += ratio.ln();
-                    push_cell(&mut out, k, format!("{ratio:.2}x"), Some(ratio));
+                    push_cell(&mut out, k, format_delta(ratio), Some(ratio));
                 }
             }
         }
@@ -611,7 +1104,7 @@ pub fn pretty(rows: &[Row], color: bool) -> String {
         for (k, column) in columns.iter().enumerate() {
             if column.3.is_some() {
                 let ratio = (log_ratio_sums[k] / case_count as f64).exp();
-                push_cell(&mut out, k, format!("{ratio:.2}x"), Some(ratio));
+                push_cell(&mut out, k, format_delta(ratio), Some(ratio));
             } else {
                 push_cell(&mut out, k, String::new(), None);
             }
@@ -744,4 +1237,44 @@ fn compress_cached(name: &str, data: &[u8], hash: u64, params: &Params) -> Vec<u
         eprintln!("warning: cannot write {}", path.display());
     }
     frame
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn format_delta_examples() {
+        assert_eq!(format_delta(1.02), "+2.0%");
+        assert_eq!(format_delta(0.95), "-5.0%");
+        assert_eq!(format_delta(1.0), "+0.0%");
+        assert_eq!(format_delta(1.0002), "+0.0%");
+        assert_eq!(format_delta(0.9998), "+0.0%");
+        assert_eq!(format_delta(1.105), "+10.5%");
+    }
+
+    #[test]
+    fn pretty_table_format() {
+        let rows = vec![
+            Row {
+                case: "test-case".into(),
+                imp: "zefiro",
+                content_bytes: 1_000_000,
+                compressed_bytes: 500_000,
+                frames: 1,
+                best: Duration::from_millis(1),
+            },
+            Row {
+                case: "test-case".into(),
+                imp: "zstd",
+                content_bytes: 1_000_000,
+                compressed_bytes: 500_000,
+                frames: 1,
+                best: Duration::from_millis(1),
+            },
+        ];
+        let table = pretty(&rows, false, false);
+        assert!(table.contains("+0.0%"));
+    }
 }

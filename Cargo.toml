@@ -77,8 +77,7 @@ todo = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
 
-# Fair comparison with C libzstd (-O3, one translation unit per file) and with
-# bench-ref, which sets the same profile (PLAN.md section 7).
+# Fair comparison with C libzstd (-O3, one translation unit per file).
 [profile.release]
 debug = true
 lto = "fat"

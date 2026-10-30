@@ -1,121 +1,96 @@
 # zefiro
 
-A zstd decompressor in Rust. It decodes only (no compression), and gives the same
-output and the same error codes as libzstd 1.5.7, including on invalid input. Not
-supported: legacy formats (v0.1 to v0.7) and magicless frames. A few invalid inputs
-(offsets beyond the window, for instance) can give a different error or garbage.
+A fast and safe zstd decoder in pure Rust.
 
-## Features
+The main goal of zefiro is to have a fast decoder, on par with or faster than the original C implementation, thoroughly tested and fuzzed against `libzstd`.
+We focus solely on decoding and do not implement encoding.
 
-- One-shot decompression into a `Vec` (`decompress`) or into your buffer
-  (`Decoder::decompress_into`).
-- Streaming with `Decoder::decompress_stream`, which follows `ZSTD_decompressStream`
-  call by call, and `Reader`, an `io::Read` over any `BufRead`.
-- Dictionaries, formatted or raw content (`Dictionary`, `Decoder::set_dictionary`).
-- A window limit for untrusted input (`Decoder::set_window_log_max`, 128 MiB by default).
-- Concatenated and skippable frames, checksums, content sizes, long windows.
-- `no_std` with `alloc`: disable the default `std` feature. `Reader` needs `std`.
+Every decoding path is checked for exact parity with `libzstd`.
+Unsafe blocks are validated with [Miri](https://github.com/rust-lang/miri) to prevent undefined behavior, streaming consistency is verified with [proptest](https://github.com/proptest-rs/proptest), and differential fuzzing against `libzstd` ensures stability on both valid and corrupted inputs.
 
-Minimum supported Rust version: 1.89.
+Output is byte-identical to `libzstd` 1.5.7 on all valid frames.
+Legacy formats (v0.1 to v0.7) and magicless frames are *not* supported.
 
 ## Usage
 
-```rust
-use zefiro::decompress;
+### One-shot decompression
 
-// A frame with one raw block: "hello".
-let compressed = [
-    0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x05, 0x29, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
-];
-// The second argument bounds the size of the output.
-let data = decompress(&compressed, 1 << 20).unwrap();
-assert_eq!(data, b"hello");
-```
+Decompress directly into a buffer you own:
 
-Into a buffer you own, reusing the decoder (and its tables) between calls. The buffer
-needs the content size of the frames, which `frame_content_size` reads from a header:
-
-```rust
+```rust ignore
 use zefiro::{Decoder, frame_content_size};
 
-let compressed = [
-    0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x05, 0x29, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
-];
-let size = frame_content_size(&compressed).unwrap().unwrap();
+let compressed: &[u8] = &[/* your .zst data */];
+let size = frame_content_size(compressed)?.unwrap_or(1 << 20);
+
 let mut output = vec![0; size as usize];
 let mut decoder = Decoder::new();
-let written = decoder.decompress_into(&compressed, &mut output).unwrap();
-assert_eq!(&output[..written], b"hello");
+let written = decoder.decompress_into(compressed, &mut output)?;
 ```
 
-Streaming from any `BufRead`. Input ending inside a frame is `ErrorKind::UnexpectedEof`,
-invalid input is `ErrorKind::InvalidData` with the `Error` as its source:
+### Streaming
 
-```rust
-use std::io::Read;
-use zefiro::Reader;
+Wrap any `BufRead` with `Reader`:
 
-let compressed = [
-    0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x05, 0x29, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
-];
-let mut reader = Reader::new(compressed.as_slice());
-let mut text = String::new();
-reader.read_to_string(&mut text).unwrap();
-assert_eq!(text, "hello");
-```
-
-A dictionary and a window limit, for frames read from a file:
-
-```rust,no_run
+```rust ignore
 use std::fs::File;
 use std::io::{BufReader, Read};
-use zefiro::{Decoder, Dictionary, Reader};
+use zefiro::Reader;
 
-let dictionary = Dictionary::new(&std::fs::read("data.dict").unwrap()).unwrap();
-let mut decoder = Decoder::new();
-decoder.set_dictionary(Some(&dictionary));
-decoder.set_window_log_max(24); // refuse frames with a window above 16 MiB
-let file = BufReader::new(File::open("data.zst").unwrap());
-let mut data = Vec::new();
-Reader::with_decoder(decoder, file).read_to_end(&mut data).unwrap();
+let file = BufReader::new(File::open("data.zst")?);
+let mut reader = Reader::new(file);
+
+let mut decompressed = Vec::new();
+reader.read_to_end(&mut decompressed)?;
 ```
 
-Without `Reader`, feed `decompress_stream` with pieces of input and drain its output.
-It stops when the input is used up and the output buffer is not full:
+More advanced options (custom dictionaries, window limits, manual stream stepping) are detailed in the documentation.
 
-```rust
-use zefiro::Decoder;
+## Comparison with existing crates
 
-let compressed = [
-    0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x05, 0x29, 0x00, 0x00, b'h', b'e', b'l', b'l', b'o',
-];
-let mut decoder = Decoder::new();
-let (mut data, mut buffer) = (Vec::new(), [0; 4]);
-let mut input = &compressed[..];
-loop {
-    let progress = decoder.decompress_stream(input, &mut buffer).unwrap();
-    data.extend_from_slice(&buffer[..progress.written]);
-    input = &input[progress.consumed..];
-    if input.is_empty() && progress.written < buffer.len() {
-        break;
-    }
-}
-assert_eq!(data, b"hello");
+There are several zstd crates in the Rust ecosystem, but most attempt to implement the full codec (both compression and decompression), leading to large codebases. zefiro focuses purely on decoding and doing it well: a small, auditable codebase with high performance, thoroughly tested against the C reference.
+
+| Crate | Source LOC* | Safe | Fuzzed vs `libzstd` | Parallel Decompression |
+| :--- | :---: | :---: | :---: | :---: |
+| **zefiro** | **~4K** | Some unsafe (Miri checked) | ✅ | ❌ |
+| [rust-zstd](https://github.com/physwkim/rust-zstd) (0.4.1) | ~19K | ❌ | ❌ | ✅ |
+| [ruzstd](https://github.com/KillingSpark/zstd-rs) (0.9.1) | ~9K | ❌ | ⚠️ | ❌ |
+| [zrip](https://github.com/paddor/zrip) (0.8.13) | ~13K | ✅ | ✅ | ❌ |
+| [mzstd](https://github.com/M-Compressors/mzstd) (0.2.8) | ~30K | ✅ | ✅ | ❌ |
+
+*Counted with [tokei](https://github.com/XAMPPRocky/tokei) excluding tests and `#[cfg(test)]` blocks.
+
+⚠️ `ruzstd` fuzzes against crashes but not differentially against `libzstd`.
+
+### Performance
+
+Average throughput speedup against the reference C implementation (v1.5.7) across standard corpus files (levels 1 to 22, text, binaries, small frames, and dictionary datasets).
+
+You can run the detailed benchmark with:
+```sh
+cargo r -r -p compare --bin bench -- --exhaustive
 ```
 
-## How exactness is checked
+#### ARM (Apple M1, October 2026)
 
-libzstd is the oracle. The tests in `crates/compare` decode the same inputs with both
-decoders and require the same output or the same error code, and for streaming the same
-bytes consumed and written on every call, for random chunkings, window limits and
-dictionaries. The inputs are valid, truncated, mutated and random frames, frames from
-`decodecorpus` (every format feature), and golden files recorded from libzstd.
-The fuzz targets in `fuzz/` (`decompress`, `stream`, `dict`, `round_trip`, `mutate`) run
-the same comparisons under libFuzzer.
+| Mode | zefiro | rust-zstd | mzstd | zrip | ruzstd |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| One-shot | +3.8% | **+4.5%** | -27.2% | -30.4% | -74.9% |
+| Stream | **+4.7%** | +1.9% | -29.1% | -66.3% | -72.6% |
 
-## Performance
+#### x86-64 (AMD Zen 3, October 2026)
 
-On an Apple M1, one-shot decompression runs at 0.99x to 1.11x of libzstd on the
-benchmark files (levels 1 to 22, geomean 1.02x). On an AMD Zen 3 (x86-64, libzstd with its BMI2
-assembly Huffman loop) it runs at 0.96x to 1.12x on the benchmark files, with the same
-verdicts.
+AMD Ryzen (Zen 3, 8 cores / 16 threads, Linux, performance governor, libzstd compiled with BMI2 assembly Huffman loop):
+
+| Mode | zefiro | rust-zstd | mzstd | zrip | ruzstd |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| One-shot | +6.5% | **+11.3%** | - | - | - |
+| Stream | +3.8% | **+10.1%** | - | - | - |
+
+## Acknowledgements
+
+[libzstd](https://github.com/facebook/zstd) is the reference implementation we test and fuzz against.
+
+We reused several optimization tricks from [rust-zstd](https://github.com/physwkim/rust-zstd).
+
+Our testing and fuzzing architecture is modeled after [sirocco](https://github.com/srijs/sirocco), which also inspired the name "zefiro".

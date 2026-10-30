@@ -78,14 +78,12 @@ cargo r -r -p compare --bin bench -- --exhaustive
 | One-shot | +3.8% | **+4.5%** | -27.2% | -30.4% | -74.9% |
 | Stream | **+4.7%** | +1.9% | -29.1% | -66.3% | -72.6% |
 
-#### x86-64 (AMD Zen 3, October 2026)
-
-AMD Ryzen (Zen 3, 8 cores / 16 threads, Linux, performance governor, libzstd compiled with BMI2 assembly Huffman loop):
+#### x86 (AMD Zen 3, October 2026)
 
 | Mode | zefiro | rust-zstd | mzstd | zrip | ruzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | +6.5% | **+11.3%** | - | - | - |
-| Stream | +3.8% | **+10.1%** | - | - | - |
+| One-shot | +3.3% | **+6.9%** | -0.6% | -28.8% | -72.7% |
+| Stream | +3.2% | **+6.6%** | -3.0% | -55.2% | -67.9% |
 
 ## Acknowledgements
 

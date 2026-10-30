@@ -330,7 +330,7 @@ impl SequencesState {
         nb_seq: usize,
         stream: &[u8],
         literals: &Literals<'_>,
-        out: &mut [u8],
+        out: &mut [core::mem::MaybeUninit<u8>],
         place: &Placement<'_>,
     ) -> Result<usize, Error> {
         let literal_bytes = literals.bytes();
@@ -377,7 +377,14 @@ impl SequencesState {
         if last_literals.len() > place.range.end - op {
             return Err(Error::DstSizeTooSmall);
         }
-        out[op..op + last_literals.len()].copy_from_slice(last_literals);
+        // SAFETY: op + last_literals.len() <= place.range.end <= out.len().
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                last_literals.as_ptr(),
+                out.as_mut_ptr().add(op).cast::<u8>(),
+                last_literals.len(),
+            );
+        }
         Ok(op + last_literals.len())
     }
 
@@ -393,7 +400,7 @@ impl SequencesState {
         nb_seq: usize,
         stream: &[u8],
         literals: &Literals<'_>,
-        out: &mut [u8],
+        out: &mut [core::mem::MaybeUninit<u8>],
         place: &Placement<'_>,
     ) -> Result<(usize, usize, [u32; 3]), Error> {
         let range = &place.range;
@@ -401,8 +408,7 @@ impl SequencesState {
         assert!(range.start <= range.end && range.end <= out.len());
         assert!(literals.padded.len() >= literals.len + WILDCOPY_OVERLENGTH);
         let mut decoder = SequenceDecoder::new(stream, tables, self.repeat_offsets)?;
-        // One `as_mut_ptr` call: a second one would invalidate the first pointer.
-        let out_base = out.as_mut_ptr();
+        let out_base = out.as_mut_ptr().cast::<u8>();
         let limits = Limits {
             out_base,
             out_len: out.len(),
@@ -853,13 +859,10 @@ fn exec_sequence_end(
     cursor: Cursor,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
-    // SAFETY: `out_base` and `out_len` come from the `&mut` slice of `run_sequences`, which is not
-    // used while this one lives.
-    let out = unsafe { core::slice::from_raw_parts_mut(limits.out_base, limits.out_len) };
     let op = cursor.op.addr() - limits.out_base.addr();
     let mut literal_pos = cursor.lit.addr() - limits.lit_base.addr();
     let op = exec_sequence_exact(
-        out,
+        limits.out_base,
         op,
         limits.out_end,
         sequence,
@@ -876,7 +879,7 @@ fn exec_sequence_end(
 // `ZSTD_execSequenceEnd` (checks in libzstd's order): returns the output
 // position after the sequence.
 fn exec_sequence_exact(
-    out: &mut [u8],
+    out_base: *mut u8,
     op: usize,
     end: usize,
     sequence: Sequence,
@@ -896,16 +899,23 @@ fn exec_sequence_exact(
         return Err(Error::CorruptionDetected);
     }
     let literals_end = op + literal_length;
-    out[op..literals_end].copy_from_slice(&literals[*literal_pos..*literal_pos + literal_length]);
+    // SAFETY: op + literal_length <= end, bounds of the output allocation.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            literals[*literal_pos..].as_ptr(),
+            out_base.add(op),
+            literal_length,
+        );
+    }
     *literal_pos += literal_length;
-    copy_match(out, literals_end, offset, match_length, ext)?;
+    copy_match(out_base, literals_end, offset, match_length, ext)?;
     Ok(literals_end + match_length)
 }
 
-// Copies a match to `out[dest..]`. The history is `out[..dest]`, preceded by `ext`. A match
-// can span both, and overlap its own output.
+// Copies a match to `out_base.add(dest)`. The history is preceding bytes in `out_base`,
+// preceded by `ext`. A match can span both, and overlap its own output.
 fn copy_match(
-    out: &mut [u8],
+    out_base: *mut u8,
     dest: usize,
     offset: usize,
     match_length: usize,
@@ -920,10 +930,21 @@ fn copy_match(
         let from_previous = remaining.min(offset - dest);
         let start = ext_len - (offset - dest);
         match ext {
-            Ext::Ring(_) => out.copy_within(start..start + from_previous, dest),
+            Ext::Ring(_) => {
+                // SAFETY: start and dest are within the ring buffer; ranges may overlap.
+                unsafe {
+                    core::ptr::copy(out_base.add(start), out_base.add(dest), from_previous);
+                }
+            }
             Ext::Dict(padded) => {
-                out[dest..dest + from_previous]
-                    .copy_from_slice(&padded[start..start + from_previous]);
+                // SAFETY: source is within the padded dictionary; dest in output.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        padded[start..].as_ptr(),
+                        out_base.add(dest),
+                        from_previous,
+                    );
+                }
             }
         }
         dest += from_previous;
@@ -937,7 +958,10 @@ fn copy_match(
     let mut done = 0;
     while done < remaining {
         let chunk = (gap + done).min(remaining - done);
-        out.copy_within(source..source + chunk, dest + done);
+        // SAFETY: source + chunk <= dest + done <= dest + remaining; within output.
+        unsafe {
+            core::ptr::copy(out_base.add(source), out_base.add(dest + done), chunk);
+        }
         done += chunk;
     }
     Ok(())

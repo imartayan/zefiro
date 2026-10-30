@@ -23,6 +23,7 @@ pub struct Decoder {
     pub(crate) sequences: SequencesState,
     pub(crate) stream: Stream,
     pub(crate) dictionary: Option<Dictionary>,
+    pub(crate) verify_checksum: bool,
 }
 
 impl Decoder {
@@ -35,7 +36,24 @@ impl Decoder {
             sequences: SequencesState::new(),
             stream: Stream::new(),
             dictionary: None,
+            verify_checksum: true,
         }
+    }
+
+    /// Resets the streaming state machine to begin decoding a new frame cleanly.
+    ///
+    /// Any loaded dictionary and configured window limits are preserved.
+    #[inline]
+    pub const fn reset(&mut self) {
+        self.stream.reset();
+    }
+
+    /// Enables or disables checksum verification for frames containing a checksum.
+    ///
+    /// Defaults to `true`. When disabled, the 4-byte checksum is still consumed
+    /// from the input, but hash calculation and validation are skipped.
+    pub const fn set_verify_checksum(&mut self, verify: bool) {
+        self.verify_checksum = verify;
     }
 
     /// Decodes every following frame with `dictionary` (`ZSTD_DCtx_loadDictionary`), or
@@ -51,11 +69,13 @@ impl Decoder {
         self.stream.reset();
     }
 
-    /// Decodes every frame of `input` into `output` and returns the number of
-    /// bytes written, like `ZSTD_decompressDCtx` (skippable frames are skipped,
-    /// trailing bytes that are not a whole frame are an error). Bytes of `output`
-    /// past the returned length are scratch: wild copies may overwrite them.
-    pub fn decompress_into(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
+    /// Decodes every frame of `input` into uninitialized `output` memory, like
+    /// [`Decoder::decompress_into`]. Returns the number of bytes written.
+    pub fn decompress_into_uninit(
+        &mut self,
+        input: &[u8],
+        output: &mut [core::mem::MaybeUninit<u8>],
+    ) -> Result<usize, Error> {
         let mut input = input;
         let mut written = 0;
         let mut frames_done = false;
@@ -84,11 +104,42 @@ impl Decoder {
         }
     }
 
+    /// Decompresses into `out`, clearing it and reusing its allocated capacity without
+    /// zero-filling. If `out` has insufficient capacity, it reserves the space needed
+    /// when the frame content size or bound is known.
+    pub fn decompress_into_vec(
+        &mut self,
+        input: &[u8],
+        out: &mut alloc::vec::Vec<u8>,
+    ) -> Result<usize, Error> {
+        out.clear();
+        if out.capacity() == 0
+            && let Ok(info) = crate::frame::frame_info(input)
+        {
+            let needed = info.content_len.unwrap_or(info.max_uncompressed_len) as usize;
+            out.reserve(needed);
+        }
+        let written = self.decompress_into_uninit(input, out.spare_capacity_mut())?;
+        // SAFETY: decompress_into_uninit initialized the first `written` bytes of spare capacity.
+        unsafe {
+            out.set_len(written);
+        }
+        Ok(written)
+    }
+
+    /// Decodes every frame of `input` into `output` and returns the number of
+    /// bytes written, like `ZSTD_decompressDCtx` (skippable frames are skipped,
+    /// trailing bytes that are not a whole frame are an error). Bytes of `output`
+    /// past the returned length are scratch: wild copies may overwrite them.
+    pub fn decompress_into(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, Error> {
+        self.decompress_into_uninit(input, slice_to_uninit_mut(output))
+    }
+
     // `ZSTD_decompressFrame`: returns (input consumed, output written).
     fn decompress_frame(
         &mut self,
         input: &[u8],
-        output: &mut [u8],
+        output: &mut [core::mem::MaybeUninit<u8>],
     ) -> Result<(usize, usize), Error> {
         self.begin_frame();
         if input.len() < FRAME_HEADER_MIN_SIZE + BLOCK_HEADER_SIZE {
@@ -108,6 +159,8 @@ impl Decoder {
 
         let mut input_pos = header_size;
         let mut written = 0;
+        let out_base = output.as_mut_ptr().cast::<u8>();
+        let out_len = output.len();
         loop {
             let block = parse_block_header(&input[input_pos..])?;
             input_pos += BLOCK_HEADER_SIZE;
@@ -116,7 +169,7 @@ impl Decoder {
                 return Err(Error::SrcSizeWrong);
             }
             let block_input = &input[input_pos..input_pos + block_input_size];
-            let block_output = &mut output[written..];
+            let remaining = out_len - written;
             let block_written = match block.block_type {
                 BlockType::Compressed => {
                     let max = header.block_size_max as usize;
@@ -138,22 +191,36 @@ impl Decoder {
                     )?
                 }
                 BlockType::Raw => {
-                    let target = block_output
-                        .get_mut(..block_input_size)
-                        .ok_or(Error::DstSizeTooSmall)?;
-                    target.copy_from_slice(block_input);
+                    if block_input_size > remaining {
+                        return Err(Error::DstSizeTooSmall);
+                    }
+                    // SAFETY: `block_input_size` bytes fit within `remaining`.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            block_input.as_ptr(),
+                            out_base.add(written),
+                            block_input_size,
+                        );
+                    }
                     block_input_size
                 }
                 BlockType::Rle => {
                     let size = block.size as usize;
-                    let target = block_output.get_mut(..size).ok_or(Error::DstSizeTooSmall)?;
-                    target.fill(block_input[0]);
+                    if size > remaining {
+                        return Err(Error::DstSizeTooSmall);
+                    }
+                    // SAFETY: `size` bytes fit within `remaining`.
+                    unsafe {
+                        core::ptr::write_bytes(out_base.add(written), block_input[0], size);
+                    }
                     size
                 }
             };
-            if header.checksum {
-                self.checksum
-                    .write(&output[written..written + block_written]);
+            if header.checksum && self.verify_checksum {
+                // SAFETY: `block_written` bytes at out_base.add(written) were just written.
+                let block_slice =
+                    unsafe { core::slice::from_raw_parts(out_base.add(written), block_written) };
+                self.checksum.write(block_slice);
             }
             written += block_written;
             input_pos += block_input_size;
@@ -162,7 +229,13 @@ impl Decoder {
             }
         }
 
-        check_frame_end(&header, written, &input[input_pos..], &self.checksum)?;
+        check_frame_end(
+            &header,
+            written,
+            &input[input_pos..],
+            &self.checksum,
+            self.verify_checksum,
+        )?;
         let checksum_size = if header.checksum { CHECKSUM_SIZE } else { 0 };
         Ok((input_pos + checksum_size, written))
     }
@@ -176,13 +249,25 @@ pub(crate) struct History<'a> {
     pub(crate) streaming: bool,
 }
 
+// Views a mutable byte slice as uninitialized memory.
+#[inline(always)]
+pub(crate) const fn slice_to_uninit_mut(slice: &mut [u8]) -> &mut [core::mem::MaybeUninit<u8>] {
+    // SAFETY: initialized bytes are always valid `MaybeUninit<u8>`, and layouts are identical.
+    unsafe {
+        core::slice::from_raw_parts_mut(
+            slice.as_mut_ptr().cast::<core::mem::MaybeUninit<u8>>(),
+            slice.len(),
+        )
+    }
+}
+
 // `ZSTD_decompressBlock_internal`: the block's output goes to `output` from `start`,
 // earlier bytes (then `history.ext`) are the history.
 pub(crate) fn decompress_compressed_block(
     literals_state: &mut LiteralsState,
     sequences: &mut SequencesState,
     block: &[u8],
-    output: &mut [u8],
+    output: &mut [core::mem::MaybeUninit<u8>],
     start: usize,
     block_size_max: usize,
     history: History<'_>,
@@ -226,7 +311,7 @@ impl Decoder {
         if header.dict_id != 0 && header.dict_id != dictionary_id {
             return Err(Error::DictionaryWrong);
         }
-        if header.checksum {
+        if header.checksum && self.verify_checksum {
             self.checksum = XxHash64::with_seed(0);
         }
         Ok(())
@@ -245,6 +330,7 @@ fn check_frame_end(
     written: usize,
     rest: &[u8],
     checksum: &XxHash64,
+    verify_checksum: bool,
 ) -> Result<(), Error> {
     if header
         .content_size
@@ -252,10 +338,13 @@ fn check_frame_end(
     {
         return Err(Error::CorruptionDetected);
     }
-    if header.checksum
-        && (rest.len() < CHECKSUM_SIZE || read_le32(rest, 0) != checksum.finish() as u32)
-    {
-        return Err(Error::ChecksumWrong);
+    if header.checksum {
+        if rest.len() < CHECKSUM_SIZE {
+            return Err(Error::ChecksumWrong);
+        }
+        if verify_checksum && read_le32(rest, 0) != checksum.finish() as u32 {
+            return Err(Error::ChecksumWrong);
+        }
     }
     Ok(())
 }

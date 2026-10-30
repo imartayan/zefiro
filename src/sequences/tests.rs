@@ -47,6 +47,10 @@ fn rle_block(count: u8, (ll, of, ml): (u8, u8, u8), fields: &[(u64, u32)]) -> Ve
     .concat()
 }
 
+fn uninit_mut(buf: &mut [u8]) -> &mut [core::mem::MaybeUninit<u8>] {
+    crate::decoder::slice_to_uninit_mut(buf)
+}
+
 fn run(
     state: &mut SequencesState,
     block: &[u8],
@@ -68,7 +72,7 @@ fn run(
         ext: Ext::Ring(0),
         total_history: 0,
     };
-    let block_end = state.execute_block(nb_seq, stream, &literals, &mut out, &place)?;
+    let block_end = state.execute_block(nb_seq, stream, &literals, uninit_mut(&mut out), &place)?;
     Ok(out[history.len()..block_end].to_vec())
 }
 
@@ -155,7 +159,7 @@ fn repeat_mode_needs_a_block_that_started_decoding() {
     };
     assert!(
         state
-            .execute_block(nb_seq, stream, &literals, &mut out, &place)
+            .execute_block(nb_seq, stream, &literals, uninit_mut(&mut out), &place)
             .is_err()
     );
     assert!(state.read_header(&repeat).is_ok());
@@ -240,7 +244,7 @@ fn execution_checks_in_libzstd_order() {
     let mut position = 0;
     let mut run = |out: &mut [u8], op, end, sequence| {
         exec_sequence_exact(
-            out,
+            out.as_mut_ptr(),
             op,
             end,
             sequence,
@@ -304,7 +308,8 @@ fn matches_reach_the_previous_ring_segment() {
                 ext: Ext::Ring(ext_len),
                 total_history: 0,
             };
-            let block_end = state.execute_block(nb_seq, stream, &literals, &mut ring, &place);
+            let block_end =
+                state.execute_block(nb_seq, stream, &literals, uninit_mut(&mut ring), &place);
             assert_eq!(block_end, Ok(9), "size {size} ext {ext_len} end {end}");
             assert_eq!(
                 &ring[..9],
@@ -320,7 +325,8 @@ fn matches_reach_the_previous_ring_segment() {
         ext: Ext::Ring(3),
         total_history: 0,
     };
-    let result = state.execute_block(nb_seq, stream, &literals, &mut [0; 70], &place);
+    let mut out = [0; 70];
+    let result = state.execute_block(nb_seq, stream, &literals, uninit_mut(&mut out), &place);
     assert_eq!(result, Err(Error::CorruptionDetected));
 }
 
@@ -346,7 +352,8 @@ fn matches_reach_a_dictionary() {
             ext: Ext::Dict(&history),
             total_history: 0,
         };
-        let block_end = state.execute_block(nb_seq, stream, &literals, &mut out, &place);
+        let block_end =
+            state.execute_block(nb_seq, stream, &literals, uninit_mut(&mut out), &place);
         assert_eq!(block_end, Ok(9), "end {end}");
         assert_eq!(&out[..9], b"678888888", "end {end}");
         state.repeat_offsets = INITIAL_REPEAT_OFFSETS;
@@ -357,7 +364,8 @@ fn matches_reach_a_dictionary() {
         ext: Ext::Dict(&short),
         total_history: 0,
     };
-    let result = state.execute_block(nb_seq, stream, &literals, &mut [0; 70], &place);
+    let mut out = [0; 70];
+    let result = state.execute_block(nb_seq, stream, &literals, uninit_mut(&mut out), &place);
     assert_eq!(result, Err(Error::CorruptionDetected));
 }
 
@@ -461,7 +469,12 @@ fn run_loop<const PREFETCH: bool>(
     };
     let tables = &*state.tables;
     let (op, _, repeat_offsets) = state.run_sequences::<Portable, PREFETCH, false>(
-        tables, nb_seq, stream, &literals, &mut out, &place,
+        tables,
+        nb_seq,
+        stream,
+        &literals,
+        uninit_mut(&mut out),
+        &place,
     )?;
     Ok((out[history.len()..op].to_vec(), repeat_offsets))
 }

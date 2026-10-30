@@ -419,6 +419,7 @@ impl Decoder {
             checksum,
             stream,
             dictionary,
+            verify_checksum,
         } = self;
         // `ZSTD_checkContinuity`: after a restart the previous segment becomes history.
         if capacity > 0 && stream.out_start != stream.segment_end {
@@ -462,7 +463,9 @@ impl Decoder {
                             literals,
                             sequences,
                             src,
-                            &mut stream.ring[..stream.ring_len],
+                            crate::decoder::slice_to_uninit_mut(
+                                &mut stream.ring[..stream.ring_len],
+                            ),
                             start,
                             stream.block_size_max,
                             History {
@@ -492,7 +495,7 @@ impl Decoder {
                     return Err(Error::CorruptionDetected);
                 }
                 stream.decoded_size += decoded as u64;
-                if stream.checksum {
+                if stream.checksum && *verify_checksum {
                     checksum.write(&stream.ring[start..start + decoded]);
                 }
                 stream.segment_end = start + decoded;
@@ -513,7 +516,10 @@ impl Decoder {
                 Ok(decoded)
             }
             Stage::Checksum => {
-                if stream.checksum && read_le32(src, 0) != checksum.finish() as u32 {
+                if stream.checksum
+                    && *verify_checksum
+                    && read_le32(src, 0) != checksum.finish() as u32
+                {
                     return Err(Error::ChecksumWrong);
                 }
                 (stream.stage, stream.expected) = (Stage::End, 0);

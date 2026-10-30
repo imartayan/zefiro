@@ -7,7 +7,6 @@ extern crate alloc;
 #[cfg(any(feature = "std", test))]
 extern crate std;
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 mod bits;
@@ -29,7 +28,7 @@ mod testing;
 pub use decoder::Decoder;
 pub use dict::Dictionary;
 pub use error::Error;
-pub use frame::frame_content_size;
+pub use frame::{FrameInfo, frame_content_size, frame_info};
 #[cfg(feature = "std")]
 pub use reader::Reader;
 pub use stream::Progress;
@@ -52,9 +51,8 @@ pub fn decompress(input: &[u8], max_len: usize) -> Result<Vec<u8>, Error> {
         if size > max_len as u64 {
             return Err(Error::DstSizeTooSmall);
         }
-        let mut output = vec![0; size as usize];
-        let written = decoder.decompress_into(input, &mut output)?;
-        output.truncate(written);
+        let mut output = Vec::with_capacity(size as usize);
+        decoder.decompress_into_vec(input, &mut output)?;
         return Ok(output);
     }
     let (mut input, mut output, mut len, mut frame_done) = (input, Vec::new(), 0, true);

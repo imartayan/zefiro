@@ -4,7 +4,7 @@
 
 use std::io::{BufReader, Cursor, ErrorKind, Read};
 
-use zefiro::{Decoder, Error, Reader, decompress};
+use zefiro::{Decoder, Error, FrameInfo, Reader, decompress, frame_info};
 
 const MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
@@ -226,4 +226,164 @@ fn reader_with_decoder_abandons_a_stream_in_progress() {
     let mut output = Vec::new();
     reader.read_to_end(&mut output).unwrap();
     assert_eq!(output, data(3000));
+}
+
+#[test]
+fn frame_info_inspects_frames_and_skippable_frames() {
+    let d = data(3000);
+    let sized = frame(&d, 1000, true);
+    let info = frame_info(&sized).unwrap();
+    assert_eq!(
+        info,
+        FrameInfo {
+            compressed_len: sized.len(),
+            content_len: Some(3000),
+            max_uncompressed_len: 3000,
+            is_skippable: false,
+        }
+    );
+
+    let unsized_frame = frame(&d, 1000, false);
+    let info = frame_info(&unsized_frame).unwrap();
+    assert_eq!(info.compressed_len, unsized_frame.len());
+    assert_eq!(info.content_len, None);
+    assert!(info.max_uncompressed_len >= 3000);
+    assert!(!info.is_skippable);
+
+    let skip = skippable(b"hello world");
+    let info = frame_info(&skip).unwrap();
+    assert_eq!(
+        info,
+        FrameInfo {
+            compressed_len: skip.len(),
+            content_len: Some(0),
+            max_uncompressed_len: 0,
+            is_skippable: true,
+        }
+    );
+
+    // Multi-frame iteration via frame_info.
+    let multi = [sized.clone(), skip.clone(), unsized_frame.clone()].concat();
+    let mut rest = &multi[..];
+    let mut frames = Vec::new();
+    while !rest.is_empty() {
+        let info = frame_info(rest).unwrap();
+        frames.push(info);
+        rest = &rest[info.compressed_len..];
+    }
+    assert_eq!(frames.len(), 3);
+    assert_eq!(frames[0].compressed_len, sized.len());
+    assert_eq!(frames[1].compressed_len, skip.len());
+    assert_eq!(frames[2].compressed_len, unsized_frame.len());
+}
+
+#[test]
+fn decompress_into_vec_and_uninit() {
+    let d = data(15_000);
+    let input = frame(&d, 5000, true);
+    let mut decoder = Decoder::new();
+
+    // 1. Fresh vector with zero capacity.
+    let mut out = Vec::new();
+    let written = decoder.decompress_into_vec(&input, &mut out).unwrap();
+    assert_eq!(written, d.len());
+    assert_eq!(out, d);
+
+    // 2. Pre-allocated vector reused without reallocation.
+    let cap_before = out.capacity();
+    let written = decoder.decompress_into_vec(&input, &mut out).unwrap();
+    assert_eq!(written, d.len());
+    assert_eq!(out, d);
+    assert_eq!(out.capacity(), cap_before);
+
+    // 3. Decompress into uninitialized slice.
+    let mut uninit_buf = vec![core::mem::MaybeUninit::<u8>::uninit(); d.len() + 32];
+    let written = decoder
+        .decompress_into_uninit(&input, &mut uninit_buf)
+        .unwrap();
+    assert_eq!(written, d.len());
+    // SAFETY: exactly `written` bytes were initialized by decompress_into_uninit.
+    let init_slice =
+        unsafe { core::slice::from_raw_parts(uninit_buf.as_ptr().cast::<u8>(), written) };
+    assert_eq!(init_slice, &d[..]);
+
+    // 4. Vector with insufficient capacity fails safely and leaves length 0.
+    let mut small_out = Vec::with_capacity(10);
+    let err = decoder.decompress_into_uninit(&input, small_out.spare_capacity_mut());
+    assert_eq!(err, Err(Error::DstSizeTooSmall));
+    assert_eq!(small_out.len(), 0);
+}
+
+#[test]
+fn decoder_reset_cleans_streaming_state_and_preserves_dictionaries() {
+    let d1 = data(4000);
+    let d2 = data(2000);
+    let frame1 = frame(&d1, 1000, false);
+    let frame2 = frame(&d2, 1000, true);
+
+    let mut decoder = Decoder::new();
+    // Partially decode frame1.
+    let mut piece = [0u8; 500];
+    let progress = decoder.decompress_stream(&frame1, &mut piece).unwrap();
+    assert!(!progress.frame_done);
+    assert!(progress.written > 0);
+
+    // Reset decoder and decode frame2 cleanly.
+    decoder.reset();
+    let mut out = vec![0u8; 2000];
+    let progress = decoder.decompress_stream(&frame2, &mut out).unwrap();
+    assert!(progress.frame_done);
+    assert_eq!(&out[..progress.written], &d2[..]);
+}
+
+#[test]
+fn verify_checksum_bypass() {
+    use std::hash::Hasher;
+    use twox_hash::XxHash64;
+
+    let d = data(1000);
+    let mut hasher = XxHash64::with_seed(0);
+    hasher.write(&d);
+    let checksum = (hasher.finish() as u32).to_le_bytes();
+
+    // Frame with checksum flag (descriptor byte 0xA4: 4-byte size (bit 7-6) + single segment (bit 5) + checksum (bit 2)).
+    let header = [&MAGIC[..], &[0xA4], &(d.len() as u32).to_le_bytes()].concat();
+    let blk = block(true, 0, d.len(), &d);
+    let mut input = [header, blk, checksum.to_vec()].concat();
+
+    let mut decoder = Decoder::new();
+    let mut out = vec![0u8; d.len()];
+
+    // Normal decompression with valid checksum succeeds.
+    assert_eq!(decoder.decompress_into(&input, &mut out), Ok(d.len()));
+
+    // Corrupt the checksum byte.
+    let last = input.len() - 1;
+    input[last] ^= 0xFF;
+
+    // Default verify_checksum: true returns ChecksumWrong.
+    assert_eq!(
+        decoder.decompress_into(&input, &mut out),
+        Err(Error::ChecksumWrong)
+    );
+
+    // Streaming mode with verify_checksum: true fails with ChecksumWrong.
+    decoder.reset();
+    let mut stream_out = vec![0u8; d.len()];
+    assert_eq!(
+        decoder.decompress_stream(&input, &mut stream_out),
+        Err(Error::ChecksumWrong)
+    );
+
+    // Bypassing checksum verification succeeds in one-shot mode.
+    decoder.set_verify_checksum(false);
+    assert_eq!(decoder.decompress_into(&input, &mut out), Ok(d.len()));
+    assert_eq!(out, d);
+
+    // Bypassing checksum verification succeeds in streaming mode.
+    decoder.reset();
+    let mut stream_out = vec![0u8; d.len()];
+    let progress = decoder.decompress_stream(&input, &mut stream_out).unwrap();
+    assert!(progress.frame_done);
+    assert_eq!(&stream_out[..progress.written], &d[..]);
 }

@@ -200,22 +200,46 @@ pub(crate) fn is_skippable_magic(src: &[u8]) -> bool {
     src.len() >= 4 && read_le32(src, 0) & SKIPPABLE_MAGIC_MASK == SKIPPABLE_MAGIC
 }
 
-// `ZSTD_findFrameCompressedSize`: size of the (skippable) frame at the start of `src`,
-// from its block headers.
-pub(crate) fn find_frame_size(src: &[u8]) -> Result<usize, Error> {
-    if is_skippable_magic(src) && src.len() >= SKIPPABLE_HEADER_SIZE {
-        return skippable_frame_size(src);
+/// Information about a single zstd or skippable frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameInfo {
+    /// Exact compressed byte length of this frame (headers, blocks, and checksum).
+    pub compressed_len: usize,
+    /// Exact uncompressed byte length if recorded in the frame header.
+    pub content_len: Option<u64>,
+    /// Upper bound on uncompressed bytes (content_len if known, else sum of block capacities).
+    pub max_uncompressed_len: u64,
+    /// Whether this is an RFC 8878 skippable frame.
+    pub is_skippable: bool,
+}
+
+/// Inspects the frame starting at `src` without decompressing it.
+pub fn frame_info(src: &[u8]) -> Result<FrameInfo, Error> {
+    if is_skippable_magic(src) {
+        let compressed_len = skippable_frame_size(src)?;
+        return Ok(FrameInfo {
+            compressed_len,
+            content_len: Some(0),
+            max_uncompressed_len: 0,
+            is_skippable: true,
+        });
     }
     let FrameStart::Frame(header) = parse_frame_start(src)? else {
         return Err(Error::SrcSizeWrong);
     };
     let mut pos = header.header_size;
+    let mut max_uncompressed_len = 0u64;
     loop {
         let block = parse_block_header(&src[pos..])?;
         pos += BLOCK_HEADER_SIZE + block.input_size();
         if pos > src.len() {
             return Err(Error::SrcSizeWrong);
         }
+        let block_max = match block.block_type {
+            BlockType::Raw | BlockType::Rle => u64::from(block.size),
+            BlockType::Compressed => u64::from(header.block_size_max),
+        };
+        max_uncompressed_len = max_uncompressed_len.saturating_add(block_max);
         if block.last {
             break;
         }
@@ -226,7 +250,18 @@ pub(crate) fn find_frame_size(src: &[u8]) -> Result<usize, Error> {
         }
         pos += 4;
     }
-    Ok(pos)
+    Ok(FrameInfo {
+        compressed_len: pos,
+        content_len: header.content_size,
+        max_uncompressed_len: header.content_size.unwrap_or(max_uncompressed_len),
+        is_skippable: false,
+    })
+}
+
+// `ZSTD_findFrameCompressedSize`: size of the (skippable) frame at the start of `src`,
+// from its block headers.
+pub(crate) fn find_frame_size(src: &[u8]) -> Result<usize, Error> {
+    frame_info(src).map(|info| info.compressed_len)
 }
 
 // `ZSTD_getcBlockSize`.

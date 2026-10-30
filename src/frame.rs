@@ -3,6 +3,7 @@
 use crate::error::Error;
 
 const MAGIC: u32 = 0xFD2F_B528;
+const LEGACY_PREFIX: u32 = 0xFD2F_B500;
 const SKIPPABLE_MAGIC: u32 = 0x184D_2A50;
 const SKIPPABLE_MAGIC_MASK: u32 = 0xFFFF_FFF0;
 const WINDOW_LOG_MIN: u32 = 10;
@@ -71,6 +72,17 @@ pub fn frame_content_size(src: &[u8]) -> Result<Option<u64>, Error> {
     }
 }
 
+pub(crate) const fn legacy_version(magic: u32) -> Option<u8> {
+    if magic & 0xFFFF_FF00 != LEGACY_PREFIX {
+        return None;
+    }
+    match (magic & 0xFF) as u8 {
+        0x1E => Some(1),
+        b @ 0x22..=0x27 => Some(b - 0x20),
+        _ => None,
+    }
+}
+
 // `ZSTD_getFrameHeader`: a zstd frame header, a skippable frame header, or the
 // number of bytes missing. `src` may extend past the header.
 pub(crate) fn parse_frame_start(src: &[u8]) -> Result<FrameStart, Error> {
@@ -99,6 +111,9 @@ pub(crate) fn parse_frame_start(src: &[u8]) -> Result<FrameStart, Error> {
             return Ok(FrameStart::Skippable {
                 content_size: read_le32(src, 4),
             });
+        }
+        if let Some(version) = legacy_version(magic) {
+            return Err(Error::LegacyFormatUnsupported(version));
         }
         return Err(Error::PrefixUnknown);
     }

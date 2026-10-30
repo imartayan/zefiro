@@ -6,6 +6,8 @@ use core::fmt;
 pub enum Error {
     /// Not a zstd or skippable frame magic number.
     PrefixUnknown,
+    /// The input is a legacy zstd frame (v0.1 to v0.7), which is not supported.
+    LegacyFormatUnsupported(u8),
     /// Input ends inside a frame, or has bytes after the last frame.
     SrcSizeWrong,
     /// The frame header uses an unsupported parameter.
@@ -28,18 +30,24 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::PrefixUnknown => "unknown frame descriptor",
-            Self::SrcSizeWrong => "src size is incorrect",
-            Self::FrameParameterUnsupported => "unsupported frame parameter",
-            Self::WindowTooLarge => "frame requires too much memory for decoding",
-            Self::CorruptionDetected => "data corruption detected",
-            Self::ChecksumWrong => "restored data doesn't match checksum",
-            Self::LiteralsHeaderWrong => "header of literals block doesn't respect format",
-            Self::DstSizeTooSmall => "destination buffer is too small",
-            Self::DictionaryWrong => "dictionary mismatch",
-            Self::DictionaryCorrupted => "dictionary is corrupted",
-        })
+        match self {
+            Self::LegacyFormatUnsupported(version) => {
+                write!(f, "unsupported legacy zstd format (v0.{version})")
+            }
+            _ => f.write_str(match self {
+                Self::PrefixUnknown => "unknown frame descriptor",
+                Self::SrcSizeWrong => "src size is incorrect",
+                Self::FrameParameterUnsupported => "unsupported frame parameter",
+                Self::WindowTooLarge => "frame requires too much memory for decoding",
+                Self::CorruptionDetected => "data corruption detected",
+                Self::ChecksumWrong => "restored data doesn't match checksum",
+                Self::LiteralsHeaderWrong => "header of literals block doesn't respect format",
+                Self::DstSizeTooSmall => "destination buffer is too small",
+                Self::DictionaryWrong => "dictionary mismatch",
+                Self::DictionaryCorrupted => "dictionary is corrupted",
+                Self::LegacyFormatUnsupported(_) => unreachable!(),
+            }),
+        }
     }
 }
 

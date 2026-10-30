@@ -139,6 +139,28 @@ fn short_and_invalid_inputs() {
 }
 
 #[test]
+fn legacy_frames() {
+    let magics = [
+        (0xFD2F_B51E_u32, 1),
+        (0xFD2F_B522_u32, 2),
+        (0xFD2F_B523_u32, 3),
+        (0xFD2F_B524_u32, 4),
+        (0xFD2F_B525_u32, 5),
+        (0xFD2F_B526_u32, 6),
+        (0xFD2F_B527_u32, 7),
+    ];
+    for (magic, version) in magics {
+        let bytes = magic.to_le_bytes();
+        let frame = [bytes.as_slice(), &[0; 10]].concat();
+        assert_eq!(
+            parse_frame_start(&frame),
+            Err(Error::LegacyFormatUnsupported(version)),
+            "version {version}"
+        );
+    }
+}
+
+#[test]
 fn skippable_frames() {
     let mut frame = 0x184D_2A5Fu32.to_le_bytes().to_vec();
     assert_eq!(parse_frame_start(&frame), Ok(FrameStart::NeedMore(5)));
@@ -238,7 +260,15 @@ mod against_libzstd {
         let (is_error, code) = unsafe { (ZSTD_isError(result) != 0, ZSTD_getErrorCode(result)) };
         if is_error {
             return Err(match code {
-                ZSTD_ErrorCode::ZSTD_error_prefix_unknown => Error::PrefixUnknown,
+                ZSTD_ErrorCode::ZSTD_error_prefix_unknown => {
+                    if src.len() >= 4 {
+                        let magic = u32::from_le_bytes(src[..4].try_into().unwrap());
+                        if let Some(version) = legacy_version(magic) {
+                            return Err(Error::LegacyFormatUnsupported(version));
+                        }
+                    }
+                    Error::PrefixUnknown
+                }
                 ZSTD_ErrorCode::ZSTD_error_frameParameter_unsupported => {
                     Error::FrameParameterUnsupported
                 }

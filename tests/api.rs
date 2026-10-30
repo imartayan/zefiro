@@ -86,6 +86,15 @@ fn decompress_empty_and_broken_inputs() {
         decompress(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 1000),
         Err(Error::PrefixUnknown)
     );
+    let legacy_v07 = [0x27, 0xB5, 0x2F, 0xFD, 0, 0, 0, 0, 0, 0];
+    assert_eq!(
+        decompress(&legacy_v07, 1000),
+        Err(Error::LegacyFormatUnsupported(7))
+    );
+    assert_eq!(
+        Error::LegacyFormatUnsupported(7).to_string(),
+        "unsupported legacy zstd format (v0.7)"
+    );
     let sized = frame(&data(300), 300, true);
     assert_eq!(
         decompress(&sized[..sized.len() - 1], 1000),
@@ -150,6 +159,12 @@ fn reader_reports_truncated_and_invalid_input() {
     assert_eq!(
         error.get_ref().unwrap().to_string(),
         Error::PrefixUnknown.to_string()
+    );
+    let legacy_error = read_all(&[0x27, 0xB5, 0x2F, 0xFD, 0, 0, 0, 0, 0, 0], 16).unwrap_err();
+    assert_eq!(legacy_error.kind(), ErrorKind::InvalidData);
+    assert_eq!(
+        legacy_error.get_ref().unwrap().to_string(),
+        "unsupported legacy zstd format (v0.7)"
     );
     let trailing = [good.clone(), MAGIC[..2].to_vec()].concat();
     assert_eq!(

@@ -66,7 +66,9 @@ impl Decoder {
             }
             match self.decompress_frame(input, &mut output[written..]) {
                 // Garbage after a good frame is more likely a wrong input size.
-                Err(Error::PrefixUnknown) if frames_done => return Err(Error::SrcSizeWrong),
+                Err(Error::PrefixUnknown | Error::LegacyFormatUnsupported(_)) if frames_done => {
+                    return Err(Error::SrcSizeWrong);
+                }
                 Err(error) => return Err(error),
                 Ok((consumed, frame_written)) => {
                     input = &input[consumed..];

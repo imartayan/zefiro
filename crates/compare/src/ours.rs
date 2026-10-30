@@ -5,7 +5,7 @@ use crate::{Code, Outcome};
 impl From<Error> for Code {
     fn from(error: Error) -> Self {
         match error {
-            Error::PrefixUnknown => Self::PrefixUnknown,
+            Error::PrefixUnknown | Error::LegacyFormatUnsupported(_) => Self::PrefixUnknown,
             Error::SrcSizeWrong => Self::SrcSizeWrong,
             Error::FrameParameterUnsupported => Self::FrameParameterUnsupported,
             Error::WindowTooLarge => Self::WindowTooLarge,

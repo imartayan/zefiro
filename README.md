@@ -71,14 +71,14 @@ You can run the detailed benchmark with:
 cargo r -r -p compare --bin bench -- --exhaustive
 ```
 
-#### ARM (Apple M1, October 2026)
+#### ARM (Apple M1, 2026-11-03)
 
 | Mode | zefiro | rust-zstd | mzstd | zrip | ruzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | +3.8% | **+4.5%** | -27.2% | -30.4% | -74.9% |
-| Stream | **+4.7%** | +1.9% | -29.1% | -66.3% | -72.6% |
+| One-shot | **+4.4%** | **+4.4%** | -27.3% | -29.8% | -74.8% |
+| Stream | **+5.0%** | +1.6% | -29.5% | -66.6% | -72.6% |
 
-#### x86 (AMD Zen 3, October 2026)
+#### x86 (AMD Zen 3, 2026-10-30)
 
 | Mode | zefiro | rust-zstd | mzstd | zrip | ruzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |

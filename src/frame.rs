@@ -207,7 +207,7 @@ pub struct FrameInfo {
     pub compressed_len: usize,
     /// Exact uncompressed byte length if recorded in the frame header.
     pub content_len: Option<u64>,
-    /// Upper bound on uncompressed bytes (content_len if known, else sum of block capacities).
+    /// Upper bound on uncompressed bytes: the sum of block capacities, or content_len if lower.
     pub max_uncompressed_len: u64,
     /// Whether this is an RFC 8878 skippable frame.
     pub is_skippable: bool,
@@ -253,9 +253,22 @@ pub fn frame_info(src: &[u8]) -> Result<FrameInfo, Error> {
     Ok(FrameInfo {
         compressed_len: pos,
         content_len: header.content_size,
-        max_uncompressed_len: header.content_size.unwrap_or(max_uncompressed_len),
+        max_uncompressed_len: header
+            .content_size
+            .map_or(max_uncompressed_len, |size| size.min(max_uncompressed_len)),
         is_skippable: false,
     })
+}
+
+// `ZSTD_decompressBound`: the sum of the frames' bounds, up to the first frame that does not
+// parse (the decode fails there anyway).
+pub(crate) fn decompressed_bound(mut src: &[u8]) -> u64 {
+    let mut bound = 0u64;
+    while let Ok(info) = frame_info(src) {
+        bound = bound.saturating_add(info.max_uncompressed_len);
+        src = &src[info.compressed_len..];
+    }
+    bound
 }
 
 // `ZSTD_findFrameCompressedSize`: size of the (skippable) frame at the start of `src`,

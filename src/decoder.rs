@@ -6,8 +6,8 @@ use crate::dict::Dictionary;
 use crate::error::Error;
 use crate::frame::{
     BLOCK_HEADER_SIZE, BlockType, FRAME_HEADER_MIN_SIZE, FRAME_HEADER_PREFIX_SIZE, FrameHeader,
-    FrameStart, frame_header_size, is_skippable_magic, parse_block_header, parse_frame_start,
-    read_le32, skippable_frame_size,
+    FrameStart, decompressed_bound, frame_header_size, is_skippable_magic, parse_block_header,
+    parse_frame_start, read_le32, skippable_frame_size,
 };
 use crate::literals::LiteralsState;
 use crate::sequences::{Ext, Placement, SequencesState, block_output_limit};
@@ -104,20 +104,18 @@ impl Decoder {
         }
     }
 
-    /// Decompresses into `out`, clearing it and reusing its allocated capacity without
-    /// zero-filling. If `out` has insufficient capacity, it reserves the space needed
-    /// when the frame content size or bound is known.
+    /// Decodes every frame of `input` into `out` like [`Decoder::decompress_into`], replacing
+    /// its content without zero-filling. `out` grows to the sum of the frames' sizes, or of
+    /// their bounds for frames that do not state it.
     pub fn decompress_into_vec(
         &mut self,
         input: &[u8],
         out: &mut alloc::vec::Vec<u8>,
     ) -> Result<usize, Error> {
         out.clear();
-        if out.capacity() == 0
-            && let Ok(info) = crate::frame::frame_info(input)
-        {
-            let needed = info.content_len.unwrap_or(info.max_uncompressed_len) as usize;
-            out.reserve(needed);
+        // A bound too large to allocate is left to fail as `DstSizeTooSmall`.
+        if let Ok(bound) = usize::try_from(decompressed_bound(input)) {
+            let _ = out.try_reserve(bound);
         }
         let written = self.decompress_into_uninit(input, out.spare_capacity_mut())?;
         // SAFETY: decompress_into_uninit initialized the first `written` bytes of spare capacity.

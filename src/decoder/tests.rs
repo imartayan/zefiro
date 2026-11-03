@@ -309,3 +309,34 @@ fn decoder_is_reusable() {
     }
     assert_eq!(&output, b"abc");
 }
+
+fn decode_vec(input: &[u8], mut output: Vec<u8>) -> Result<Vec<u8>, Error> {
+    Decoder::new().decompress_into_vec(input, &mut output)?;
+    Ok(output)
+}
+
+#[test]
+fn vec_output_grows_for_every_frame() {
+    let a = frame(2, false, &[block(true, RAW, 2, b"ab")], &[]);
+    let b = frame(2, false, &[block(true, RLE, 2, b"c")], &[]);
+    let unsized_frame = windowed_frame(false, &[block(true, RAW, 3, b"xyz")]);
+    let input = [&a[..], &b, &unsized_frame].concat();
+    assert_eq!(decode_vec(&input, Vec::new()).unwrap(), b"abccxyz");
+    // A reused `Vec` with some capacity, and content to replace.
+    assert_eq!(
+        decode_vec(&input, Vec::with_capacity(1)).unwrap(),
+        b"abccxyz"
+    );
+    assert_eq!(decode_vec(&a, b"old content".to_vec()).unwrap(), b"ab");
+}
+
+#[test]
+fn vec_output_ignores_a_content_size_above_the_blocks() {
+    // 8-byte content size of `u64::MAX - 1` (`u64::MAX` is "unknown"), one raw block of 2 bytes.
+    let header = [&MAGIC[..], &[0xC0, 0x00], &(u64::MAX - 1).to_le_bytes()].concat();
+    let input = [&header[..], &block(true, RAW, 2, b"ab")].concat();
+    let mut output = Vec::new();
+    let result = Decoder::new().decompress_into_vec(&input, &mut output);
+    assert_eq!(result, Err(Error::CorruptionDetected));
+    assert!(output.capacity() < 1 << 20);
+}

@@ -86,3 +86,7 @@ panic = "abort"
 
 [profile.bench]
 debug = true
+
+[profile.test]
+opt-level = 1
+debug = "line-tables-only"

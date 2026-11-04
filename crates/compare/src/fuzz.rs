@@ -48,11 +48,11 @@ pub fn decompress(data: &[u8]) {
     );
 }
 
-/// 1 byte (2 to 4 threads, and the size of the input chunks), then as `decompress`.
+/// 1 byte (2 to 4 threads, and the sizes of the pieces of input and output), then as `decompress`.
 ///
 /// With threads, the verdict and the output are still libzstd's (the gate is 0 under
-/// `cfg(fuzzing)`: every frame takes the pipeline), and a `Reader` with threads gives the
-/// reads and the error of one without, for reads and chunks of the input of other sizes (from
+/// `cfg(fuzzing)`: every frame takes the pipeline), and `decompress_stream` and a `Reader` with
+/// threads give the bytes and the error of the serial stream, for pieces of other sizes (from
 /// the capacity).
 pub fn parallel(data: &[u8]) {
     check_build_once();
@@ -64,56 +64,241 @@ pub fn parallel(data: &[u8]) {
     };
     let capacity = usize::from(u16::from_le_bytes(*capacity));
     let theirs = compare_one_shot(input, capacity, "parallel, serial");
+    let threads_count = 2 + usize::from(threads % 3);
     let mut decoder = Decoder::new();
-    decoder.set_threads(2 + usize::from(threads % 3));
+    decoder.set_threads(threads_count);
     let ours = decompress_ours(&mut decoder, input, capacity);
     assert_agree(&ours, &theirs, "parallel");
-    let chunk = [0, 5, 97, 1000, 4096][usize::from(threads / 3) % 5];
-    reader_agrees(
-        input,
-        2 + usize::from(threads % 3),
-        1 + capacity % 5000,
-        chunk,
+    let pieces = [1, 7, 97, 1000, 4096, 1 << 17];
+    let shape = (
+        pieces[usize::from(threads / 3) % pieces.len()],
+        pieces[capacity % pieces.len()],
+        // Seed 0 is exact pieces.
+        capacity | 1,
+    );
+    streams_agree(input, threads_count, shape);
+}
+
+/// What a stream of frames gave: bytes, the end of the input in a frame, the error.
+#[derive(Debug, PartialEq)]
+struct Streamed {
+    bytes: Vec<u8>,
+    incomplete: bool,
+    error: Option<String>,
+    // The output reached the budget: the stream was cut there.
+    cut: bool,
+}
+
+// Frames of RLE blocks are gigabytes of output: streams stop after a few megabytes.
+const STREAM_BUDGET: usize = 1 << 22;
+
+fn limited_decoder(threads: usize) -> Decoder {
+    let mut decoder = Decoder::new();
+    // Windows are small, so that the ring wraps and the frames allocate little.
+    decoder.set_window_log_max(20);
+    decoder.set_threads(threads);
+    decoder
+}
+
+/// `decompress_stream` over `input` in pieces of `in_piece` bytes (varying from there by
+/// `seed`) with room for `out_piece` bytes, then with an empty input until it writes nothing.
+fn stream_pieces(
+    threads: usize,
+    input: &[u8],
+    (in_piece, out_piece, seed): (usize, usize, usize),
+) -> Streamed {
+    let mut decoder = limited_decoder(threads);
+    let mut result = Streamed {
+        bytes: Vec::new(),
+        incomplete: false,
+        error: None,
+        cut: false,
+    };
+    let (mut position, mut state) = (0usize, seed as u64);
+    let mut buffer = vec![0; 2 * out_piece];
+    while result.bytes.len() < STREAM_BUDGET {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        // From 1 to twice the piece, or the piece itself for seed 0.
+        let vary = |piece: usize| {
+            if seed == 0 {
+                piece
+            } else {
+                1 + (state >> 33) as usize % (2 * piece - 1)
+            }
+        };
+        let end = (position + vary(in_piece)).min(input.len());
+        let room = vary(out_piece).min(buffer.len());
+        match decoder.decompress_stream(&input[position..end], &mut buffer[..room]) {
+            Err(error) => {
+                result.error = Some(error.to_string());
+                return result;
+            }
+            Ok(progress) => {
+                position += progress.consumed;
+                result.bytes.extend_from_slice(&buffer[..progress.written]);
+                if progress.consumed + progress.written > 0 || progress.frame_done {
+                    result.incomplete = !progress.frame_done;
+                }
+                if end == input.len() && progress.consumed + progress.written == 0 {
+                    return result;
+                }
+            }
+        }
+    }
+    result.cut = true;
+    result
+}
+
+/// A `Reader` with `threads` over `input` in chunks of `chunk` bytes (0: one chunk), read
+/// `read_size` bytes at a time.
+fn read_pieces(threads: usize, input: &[u8], read_size: usize, chunk: usize) -> Streamed {
+    let source: Box<dyn BufRead + '_> = if chunk == 0 {
+        Box::new(input)
+    } else {
+        Box::new(BufReader::with_capacity(chunk, input))
+    };
+    let mut reader = Reader::with_decoder(limited_decoder(threads), source);
+    let mut result = Streamed {
+        bytes: Vec::new(),
+        incomplete: false,
+        error: None,
+        cut: false,
+    };
+    let mut buffer = vec![0; read_size];
+    while result.bytes.len() < STREAM_BUDGET {
+        match reader.read(&mut buffer) {
+            Ok(0) => return result,
+            Ok(read) => result.bytes.extend_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                result.incomplete = true;
+                return result;
+            }
+            Err(error) => {
+                result.error = Some(error.to_string());
+                return result;
+            }
+        }
+    }
+    result.cut = true;
+    result
+}
+
+// `threaded` has the bytes and the error of the serial stream byte by byte, which loses no byte
+// before an error, or those of the serial stream with the same pieces (a frame decoded in one
+// pass is not decoded as a stream), or stops earlier in the bytes when the serial code fails
+// on a frame that is not in the pipeline (the call that fails loses what it wrote).
+fn assert_streams_agree(
+    threaded: &Streamed,
+    lossless: &Streamed,
+    same_pieces: &Streamed,
+    raw_blocks: bool,
+    what: &str,
+) {
+    if threaded == lossless || threaded == same_pieces {
+        return;
+    }
+    // Raw blocks are taken in pieces, and a damaged frame after them can read ring memory
+    // that the pieces left in another state: its bytes, and whether it fails, depend on the
+    // size of the pieces in the serial stream too (with pieces of 1 and 1000 bytes, 46989 bytes
+    // and an error, or 55223 bytes and none). Only what is valid for both is compared.
+    if raw_blocks && (lossless.error.is_some() || same_pieces.error.is_some()) {
+        return;
+    }
+    let common = threaded.bytes.len().min(lossless.bytes.len());
+    assert!(
+        threaded.bytes[..common] == lossless.bytes[..common],
+        "{what}: bytes differ"
+    );
+    if threaded.cut || lossless.cut {
+        return;
+    }
+    assert_eq!(threaded.error, lossless.error, "{what}");
+    assert!(
+        threaded.bytes.len() <= lossless.bytes.len(),
+        "{what}: {} bytes, {} expected",
+        threaded.bytes.len(),
+        lossless.bytes.len()
     );
 }
 
-/// A `Reader` with `threads` and one without, over `input` in chunks of `chunk` bytes (0: one
-/// chunk), read `read_size` bytes at a time: every read returns the same, to the end or the
-/// first error.
-fn reader_agrees(input: &[u8], threads: usize, read_size: usize, chunk: usize) {
-    let reader = |threads| {
-        let mut decoder = Decoder::new();
-        // Windows are small, so that the ring wraps and the frames allocate little.
-        decoder.set_window_log_max(20);
-        decoder.set_threads(threads);
-        let source: Box<dyn BufRead + '_> = if chunk == 0 {
-            Box::new(input)
-        } else {
-            Box::new(BufReader::with_capacity(chunk, input))
+/// If a frame of `input` (as far as its headers parse) has a raw block of more than one byte.
+fn has_raw_blocks(mut input: &[u8]) -> bool {
+    while let Some(magic) = input.first_chunk::<4>() {
+        if magic[0] & 0xF0 == 0x50 && magic[1..] == [0x2A, 0x4D, 0x18] {
+            let Some(size) = input
+                .get(4..8)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            else {
+                return false;
+            };
+            input = input.get(8 + size as usize..).unwrap_or_default();
+            continue;
+        }
+        let Some(&descriptor) = input.get(4) else {
+            return false;
         };
-        Reader::with_decoder(decoder, source)
-    };
-    let (mut serial, mut threaded) = (reader(1), reader(threads));
-    let (mut serial_buf, mut threaded_buf) = (vec![0; read_size], vec![0; read_size]);
-    // Frames of RLE blocks are gigabytes of output: stop after a few megabytes.
-    let mut budget = 1usize << 22;
-    while budget > 0 {
-        let verdict = |result: io::Result<usize>| {
-            result.map_err(|error| (error.kind(), error.get_ref().map(ToString::to_string)))
+        let single = descriptor >> 5 & 1;
+        let content_size = match descriptor >> 6 {
+            0 => single,
+            flag => [0, 2, 4, 8][usize::from(flag)],
         };
-        let serial_read = serial.read(&mut serial_buf);
-        let serial_read = verdict(serial_read);
-        let threaded_read = verdict(threaded.read(&mut threaded_buf));
-        assert_eq!(threaded_read, serial_read, "reader, {threads} threads");
-        let Ok(read @ 1..) = serial_read else {
-            return;
-        };
-        assert!(
-            threaded_buf[..read] == serial_buf[..read],
-            "reader, {threads} threads: bytes differ"
-        );
-        budget = budget.saturating_sub(read);
+        let header = 5
+            + usize::from(1 - single)
+            + [0, 1, 2, 4][usize::from(descriptor & 3)]
+            + usize::from(content_size);
+        let mut position = header;
+        loop {
+            let Some(&[b0, b1, b2]) = input
+                .get(position..position + 3)
+                .and_then(|b| b.first_chunk())
+            else {
+                return false;
+            };
+            let word = u32::from_le_bytes([b0, b1, b2, 0]);
+            let size = (word >> 3) as usize;
+            match word >> 1 & 3 {
+                0 if size > 1 => return true,
+                0 | 2 => position += 3 + size,
+                1 => position += 4,
+                _ => return false,
+            }
+            if word & 1 != 0 {
+                break;
+            }
+        }
+        input = input
+            .get(position + 4 * usize::from(descriptor >> 2 & 1)..)
+            .unwrap_or_default();
     }
+    false
+}
+
+/// `decompress_stream` with `threads` over `input` in pieces of `shape` (input, output, seed),
+/// and a `Reader`, agree with the serial stream.
+fn streams_agree(input: &[u8], threads: usize, shape: (usize, usize, usize)) {
+    let raw_blocks = has_raw_blocks(input);
+    let lossless = stream_pieces(1, input, (1, 1 << 20, 0));
+    let same_pieces = stream_pieces(1, input, shape);
+    let threaded = stream_pieces(threads, input, shape);
+    assert_streams_agree(
+        &threaded,
+        &lossless,
+        &same_pieces,
+        raw_blocks,
+        &format!("stream, {threads} threads, {shape:?}"),
+    );
+    let (read_size, chunk) = (1 + shape.2 % 5000, [0, 5, 97, 1000, 4096][shape.0 % 5]);
+    let same_reads = read_pieces(1, input, read_size, chunk);
+    let threaded = read_pieces(threads, input, read_size, chunk);
+    assert_streams_agree(
+        &threaded,
+        &lossless,
+        &same_reads,
+        raw_blocks,
+        &format!("reader, {threads} threads, {read_size}, {chunk}"),
+    );
 }
 
 /// 5 bytes (input and output chunk sizes, window limit), then arbitrary bytes streamed

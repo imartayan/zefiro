@@ -4,14 +4,14 @@
 
 use std::fmt::Write as _;
 use std::hint::black_box;
-use std::io::{BufReader, IsTerminal as _, Read as _};
+use std::io::IsTerminal as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{fs, process};
 
-use zefiro::{Decoder, Dictionary, Reader};
+use zefiro::{Decoder, Dictionary};
 
 use crate::corpus::corpus_dir;
 use crate::{Libzstd, Params, Rng, Step, compress, compress_with_dictionary, train_dictionary};
@@ -31,7 +31,7 @@ const LONG_COPIED: usize = 24 << 20;
 const LONG_PIECE: Range<usize> = 256..4096;
 // Pieces of input and output of the streaming impls (`ZSTD_DStreamInSize` and `OutSize`).
 const STREAM_CHUNK: usize = 128 << 10;
-// Output (and input of the impls that need whole blocks) per call of the threaded streaming impls.
+// Output (and input) per call of the rust-zstd threaded streaming impl, which needs whole blocks.
 pub const STREAM_MT_CHUNK: usize = 4 << 20;
 const DEFAULT_THREADS: usize = 4;
 const DEFAULT_ROUNDS: usize = 10;
@@ -104,13 +104,8 @@ struct ZstdImpl {
 /// `Ours` with `set_threads`, one-shot.
 struct OursMt(Ours, &'static str);
 
-/// `Reader` with `set_threads`, over `STREAM_CHUNK` bytes of input at a time.
-struct OursMtStream {
-    threads: usize,
-    dictionary: Option<Dictionary>,
-    buffer: Vec<u8>,
-    name: &'static str,
-}
+/// `OursStream` with `set_threads`.
+struct OursMtStream(OursStream, &'static str);
 
 /// `Ours` and `ZstdImpl` through their streaming calls.
 struct OursStream(Ours);
@@ -257,44 +252,23 @@ impl Impl for OursMt {
 
 impl OursMtStream {
     fn new(threads: usize) -> Self {
-        Self {
-            threads,
-            dictionary: None,
-            buffer: Vec::new(),
-            name: mt_name("zefiro-mt", threads, "-stream"),
-        }
+        let mut ours = Ours::new();
+        ours.decoder.set_threads(threads);
+        Self(OursStream(ours), mt_name("zefiro-mt", threads, "-stream"))
     }
 }
 
 impl Impl for OursMtStream {
     fn name(&self) -> &'static str {
-        self.name
+        self.1
     }
 
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
-        // One byte of room past the content: the read that returns 0 ends the frame (checksum).
-        grow(&mut self.buffer, size + 1);
-        let mut decoder = Decoder::new();
-        decoder.set_threads(self.threads);
-        decoder.set_dictionary(self.dictionary.as_ref());
-        let mut reader =
-            Reader::with_decoder(decoder, BufReader::with_capacity(STREAM_CHUNK, input));
-        let mut written = 0;
-        loop {
-            let end = (size + 1).min(written + STREAM_MT_CHUNK);
-            match reader
-                .read(&mut self.buffer[written..end])
-                .expect("zefiro failed")
-            {
-                0 => return &self.buffer[..written],
-                read => written += read,
-            }
-        }
+        self.0.decompress(input, size)
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) {
-        self.dictionary = (!dictionary.is_empty())
-            .then(|| Dictionary::new(dictionary).expect("dictionary refused"));
+        self.0.set_dictionary(dictionary);
     }
 }
 
@@ -390,10 +364,10 @@ fn stream_frame(
         );
         consumed += result.consumed;
         written += result.written;
-        assert!(result.consumed + result.written > 0, "no progress");
         if result.done {
             return written;
         }
+        assert!(result.consumed + result.written > 0, "no progress");
     }
 }
 

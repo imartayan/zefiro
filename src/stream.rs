@@ -16,7 +16,7 @@ use crate::frame::{
 };
 use crate::sequences::{Ext, Output};
 
-const FRAME_HEADER_SIZE_MAX: usize = 18;
+pub(crate) const FRAME_HEADER_SIZE_MAX: usize = 18;
 const CHECKSUM_SIZE: usize = 4;
 const WINDOW_SIZE_MIN: u64 = 1 << 10;
 const WINDOW_LOG_MIN: u32 = 10;
@@ -136,6 +136,22 @@ impl Stream {
         matches!(self.phase, Phase::Init)
     }
 
+    // The part of a frame header held so far, if the stream is at a frame header.
+    #[cfg(feature = "std")]
+    pub(crate) fn header_held(&self) -> Option<&[u8]> {
+        match self.phase {
+            Phase::Init => Some(&[]),
+            Phase::LoadHeader => Some(&self.header[..self.header_len]),
+            _ => None,
+        }
+    }
+
+    // Decoded bytes wait for room in the caller's output.
+    #[cfg(feature = "std")]
+    pub(crate) const fn is_flushing(&self) -> bool {
+        matches!(self.phase, Phase::Flush)
+    }
+
     #[cfg(feature = "std")]
     pub(crate) const fn block_size_max(&self) -> usize {
         self.block_size_max
@@ -233,11 +249,24 @@ impl Decoder {
     /// when `output` can hold it all (with the checks of [`Decoder::decompress_into`]).
     /// Frames with a window above the limit of [`Decoder::set_window_log_max`] are
     /// rejected. After an error the stream restarts at the next frame header.
+    ///
+    /// With several threads ([`Decoder::set_threads`]) the output and the error are the serial
+    /// ones, but the positions are not: a call takes input ahead (what it copied counts as
+    /// consumed) and writes what is decoded by then, so output may lag behind the input
+    /// consumed. After the last input, call with an empty `input` until a call writes nothing
+    /// (one that completes a frame may consume and write nothing). Bytes decoded before an
+    /// error come out in calls before the one reporting it. How a damaged frame fails after raw
+    /// blocks may differ from a serial run, as it does between chunkings (raw blocks are taken
+    /// in pieces).
     pub fn decompress_stream(
         &mut self,
         input: &[u8],
         output: &mut [u8],
     ) -> Result<Progress, Error> {
+        #[cfg(feature = "std")]
+        if self.threads > 1 {
+            return self.decompress_stream_threaded(input, output);
+        }
         self.decompress_stream_with(input, output, &mut SerialBlocks)
     }
 

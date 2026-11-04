@@ -6,12 +6,12 @@
 //!
 //! One-shot decoding borrows the blocks from the input and scopes its threads to the call; any
 //! error redoes the whole frame with the serial code, so the verdict is the serial one.
-//! A `Reader` (`Streaming`) keeps its threads, and jobs own the bytes read from the input,
-//! which the serial `decompress_stream` machine is fed again, job by job, with the same
-//! chunking as the input had. The only thing it takes from the pipeline is the work on a
-//! compressed block: a block that stage 1, 2 or 3 fails on is decoded by the serial code from
-//! the states before it, which gives the serial error, and the serial code does the rest of the
-//! frame.
+//! `decompress_stream` (`Streaming`, kept in the `Decoder`, so is the `Reader`'s) keeps its
+//! threads, and jobs own the bytes copied from the input, which the serial stream machine is
+//! fed, job by job. The only thing it takes from the pipeline is the work on a compressed
+//! block: a block that stage 1, 2 or 3 fails on is decoded by the serial code from the states
+//! before it, which gives the serial error, and the serial code does the rest of the frame. An
+//! item (block header and block, or checksum) cut by the end of a call's input waits in its job.
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -20,7 +20,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::hash::Hasher;
 use core::mem;
-use std::io::{self, BufRead};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 
@@ -41,6 +40,7 @@ use crate::literals::{LiteralsPlan, LiteralsState};
 use crate::sequences::{
     DecodedSequences, Output, SequencesState, TableDefs, Tables, execute_decoded,
 };
+use crate::stream::FRAME_HEADER_SIZE_MAX;
 use crate::stream::Progress;
 
 // A frame takes the pipeline from this many compressed blocks and compressed bytes (one-shot),
@@ -67,14 +67,12 @@ type Flags = ([bool; 2], [bool; 5]);
 #[derive(Debug, Default)]
 struct Job<'a> {
     index: usize,
-    // One-shot: the block, borrowed from the input. Streaming: the bytes read from the input
-    // for this item (block header and block, or the checksum), not a whole block when the
-    // input ends.
+    // One-shot: the block, borrowed from the input. Streaming: the bytes copied from the input
+    // for this item (block header and block, or the checksum), not all of them when the input
+    // ends.
     bytes: Cow<'a, [u8]>,
     // Where the block starts in `bytes`.
     body: usize,
-    // Streaming: the offsets in `bytes` where a chunk of the input ended.
-    cuts: Vec<usize>,
     plan: LiteralsPlan,
     nb_seq: usize,
     stream_start: usize,
@@ -156,11 +154,15 @@ struct Pipeline<'a> {
     // takes over, which it has done when `serial` is set.
     boundary: Snapshot,
     serial: bool,
+    // Stage 1 still reads the headers of the blocks (until one fails, or the serial code takes over).
+    staging: bool,
     // Tests: blocks the serial code took over, and a block to take over although it is usable.
     #[cfg(test)]
     fallbacks: usize,
     #[cfg(test)]
-    pub(crate) fallback_at: Option<usize>,
+    handovers: usize,
+    #[cfg(test)]
+    fallback_at: Option<usize>,
 }
 
 #[derive(Debug, Default)]
@@ -178,27 +180,54 @@ struct OneShot<'a> {
     plan_pos: usize,
 }
 
-// The state of a `Reader` with threads: the workers, which outlive the frames, and the jobs of
-// the frame in progress.
+// The state of the `Decoder`'s streaming with threads: the workers, which outlive the frames,
+// and the jobs of the frame in progress.
 #[derive(Debug)]
 pub(crate) struct Streaming {
     pipeline: Pipeline<'static>,
     workers: Vec<JoinHandle<()>>,
     threads: usize,
     started: bool,
+    // The frame in progress goes through the pipeline: its header is consumed.
+    engaged: bool,
     // The frame has a checksum: it follows the last block.
     has_checksum: bool,
     checksum_next: bool,
-    // The job fed to the decoder, and how much of it was.
+    // The item being copied is the last of the frame.
+    frame_ends: bool,
+    // The item being copied from the input (`want` bytes in all, more than `bytes` holds), and
+    // what it is.
+    building: Option<Job<'static>>,
+    item: Item,
+    want: usize,
+    // The job fed to the stream machine, and how much of it was.
     current: Option<(Job<'static>, usize)>,
+    // Bytes of a raw or RLE item (header included) that go from the input to the machine
+    // without a job, when no job is in flight.
+    direct: usize,
+    // An error met after output was written in the call: reported by the next call.
+    deferred: Option<Error>,
     #[cfg(test)]
     pub(crate) frames: usize,
+    // Errors of the serial code on frames that do not go through the pipeline, which loses the
+    // bytes written in the call that fails.
+    #[cfg(test)]
+    pub(crate) serial_errors: usize,
 }
 
-// Stage 3 of a block of a `Reader`'s frame, called by the stream machine.
+// What the job being copied from the input holds.
+#[derive(Debug, Clone, Copy)]
+enum Item {
+    BlockHeader,
+    Block(BlockType),
+    Checksum,
+}
+
+// Stage 3 of a block of a streamed frame, called by the stream machine.
 struct StreamBlocks<'p, 'j> {
     pipeline: &'p mut Pipeline<'static>,
-    job: &'j Job<'static>,
+    // The job being fed, none while the machine only flushes.
+    job: Option<&'j Job<'static>>,
 }
 
 impl Job<'_> {
@@ -307,16 +336,30 @@ impl<'a> Pipeline<'a> {
     // The serial code takes over: stage 1 must not touch the states any more.
     const fn go_serial(&mut self) {
         self.serial = true;
-        self.planning = false;
+        self.staging = false;
     }
 
     // The serial code takes over from the states after the last block executed, which stage 1
     // no longer keeps (it only knows the definitions of the tables).
     fn hand_over(&mut self, literals: &mut LiteralsState, sequences: &mut SequencesState) {
+        #[cfg(test)]
+        {
+            self.handovers += 1;
+        }
         let Snapshot { huf, tables, flags } = &self.boundary;
         literals.restore(flags.0, huf);
         sequences.restore(flags.1, self.repeat_offsets, tables);
         self.go_serial();
+    }
+
+    // The frame's jobs not executed, and the ones the workers return late, are dropped.
+    fn discard_jobs(&mut self) {
+        self.executed = self.planned;
+        let (pending, decoded) = {
+            let mut queue = self.shared.lock();
+            (mem::take(&mut queue.pending), mem::take(&mut queue.decoded))
+        };
+        self.free.extend(pending.into_iter().chain(decoded));
     }
 
     const fn has_room(&self) -> bool {
@@ -372,9 +415,10 @@ impl<'a> Pipeline<'a> {
         }
     }
 
-    // The job of the next block to execute, once its stage 2 is done. Takes a pending job to
-    // decode itself rather than wait. `None` if no block is planned, or a worker died.
-    fn next_decoded(&mut self) -> Option<Job<'a>> {
+    // The job of the next block to execute, once its stage 2 is done. With `wait`, takes a
+    // pending job to decode itself rather than wait; `None` if no block is planned, or a worker
+    // died. Without, `None` also if the job is not decoded yet.
+    fn next_decoded(&mut self, wait: bool) -> Option<Job<'a>> {
         if self.executed == self.planned {
             return None;
         }
@@ -383,7 +427,7 @@ impl<'a> Pipeline<'a> {
             if let Some(at) = queue.decoded.iter().position(|j| j.index == self.executed) {
                 break queue.decoded.swap_remove(at);
             }
-            if queue.stop {
+            if queue.stop || !wait {
                 return None;
             }
             let Some(mut job) = queue.pending.pop_front() else {
@@ -542,7 +586,7 @@ impl BlockDecoder for OneShot<'_> {
         }
         let job = self
             .pipeline
-            .next_decoded()
+            .next_decoded(true)
             .filter(|job| job.usable)
             .ok_or(Error::CorruptionDetected)?;
         let result = self.pipeline.execute(&job, output, start, history);
@@ -566,19 +610,242 @@ impl Streaming {
             workers: Vec::new(),
             threads,
             started: false,
+            engaged: false,
             has_checksum: false,
             checksum_next: false,
+            frame_ends: false,
+            building: None,
+            item: Item::BlockHeader,
+            want: 0,
             current: None,
+            direct: 0,
+            deferred: None,
             #[cfg(test)]
             frames: 0,
+            #[cfg(test)]
+            serial_errors: 0,
         }
     }
 
-    // If the frame at the start of `input` goes through the threads, decodes its header and
-    // returns its size. `capacity` is the room in the caller's buffer. The gate: the frame
-    // header is whole in `input`, the content size is unknown or large, `decompress_stream`
-    // would not decode the frame in one pass, and threads are available.
-    pub(crate) fn start_frame(
+    // `Decoder::decompress_stream` with threads.
+    fn run(
+        &mut self,
+        decoder: &mut Decoder,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<Progress, Error> {
+        if let Some(error) = self.deferred.take() {
+            return Err(error);
+        }
+        // `Decoder::reset` and `set_dictionary` abandon the frame.
+        if self.engaged && decoder.stream.at_frame_start() {
+            self.abandon(decoder);
+        }
+        let (mut taken, mut written) = (0, 0);
+        let result = self.drive(decoder, input, output, &mut taken, &mut written);
+        match result {
+            // What was decoded before the error is returned first.
+            Err(error) if written > 0 => {
+                self.deferred = Some(error);
+                Ok(Progress {
+                    consumed: taken,
+                    written,
+                    frame_done: false,
+                })
+            }
+            result => result,
+        }
+    }
+
+    // The loop of `run`: frames that do not take the pipeline and the end of those that leave
+    // it go to the serial stream machine; the others are fed to it job by job.
+    fn drive(
+        &mut self,
+        decoder: &mut Decoder,
+        input: &[u8],
+        output: &mut [u8],
+        taken: &mut usize,
+        written: &mut usize,
+    ) -> Result<Progress, Error> {
+        let progress = |taken, written, frame_done| Progress {
+            consumed: taken,
+            written,
+            frame_done,
+        };
+        loop {
+            if !self.engaged {
+                if let Some(used) = self.engage(decoder, &input[*taken..], output.len())? {
+                    *taken += used;
+                    continue;
+                }
+                let result = decoder.decompress_stream_with(
+                    &input[*taken..],
+                    &mut output[*written..],
+                    &mut SerialBlocks,
+                );
+                #[cfg(test)]
+                {
+                    self.serial_errors += usize::from(result.is_err());
+                }
+                let serial = result?;
+                return Ok(progress(
+                    *taken + serial.consumed,
+                    *written + serial.written,
+                    serial.frame_done,
+                ));
+            }
+            if self.direct == 0 {
+                self.start_direct(decoder, &input[*taken..]);
+            }
+            if self.direct == 0 {
+                *taken += self.plan(decoder, &input[*taken..]);
+            }
+            // Decoded bytes the machine holds go out first, so that no error loses them.
+            if decoder.stream.is_flushing() {
+                let flushed = decoder.decompress_stream_with(
+                    &[],
+                    &mut output[*written..],
+                    &mut StreamBlocks {
+                        pipeline: &mut self.pipeline,
+                        job: None,
+                    },
+                )?;
+                *written += flushed.written;
+                if decoder.stream.is_flushing() {
+                    return Ok(progress(*taken, *written, false));
+                }
+            }
+            if self.direct > 0 {
+                let piece = &input[*taken..*taken + self.direct.min(input.len() - *taken)];
+                let blocks = &mut StreamBlocks {
+                    pipeline: &mut self.pipeline,
+                    job: None,
+                };
+                let fed =
+                    match decoder.decompress_stream_with(piece, &mut output[*written..], blocks) {
+                        Ok(fed) => fed,
+                        Err(error) => {
+                            self.abandon(decoder);
+                            return Err(error);
+                        }
+                    };
+                *taken += fed.consumed;
+                *written += fed.written;
+                self.direct -= fed.consumed;
+                if fed.frame_done {
+                    self.abandon(decoder);
+                    return Ok(progress(*taken, *written, true));
+                }
+                if self.direct > 0 || *written == output.len() || fed.consumed + fed.written == 0 {
+                    return Ok(progress(*taken, *written, false));
+                }
+                continue;
+            }
+            if self.current.is_none()
+                && !self.next_job(decoder, input.is_empty(), *taken + *written == 0)
+            {
+                if self.engaged {
+                    return Ok(progress(*taken, *written, false));
+                }
+                continue;
+            }
+            let Some((job, position)) = self.current.as_mut() else {
+                continue;
+            };
+            let result = decoder.decompress_stream_with(
+                &job.bytes[*position..],
+                &mut output[*written..],
+                &mut StreamBlocks {
+                    pipeline: &mut self.pipeline,
+                    job: Some(job),
+                },
+            );
+            let fed = match result {
+                Ok(fed) => fed,
+                Err(error) => {
+                    self.abandon(decoder);
+                    return Err(error);
+                }
+            };
+            *written += fed.written;
+            *position += fed.consumed;
+            if *position == job.bytes.len()
+                && let Some((job, _)) = self.current.take()
+            {
+                self.pipeline.recycle(job);
+            }
+            if fed.frame_done {
+                self.abandon(decoder);
+                return Ok(progress(*taken, *written, true));
+            }
+            // With all the input taken, the caller gets to offer more before the jobs in flight
+            // are executed: the threads keep their blocks.
+            let input_taken = !input.is_empty() && *taken == input.len() && *written > 0;
+            if *written == output.len() || fed.consumed + fed.written == 0 || input_taken {
+                return Ok(progress(*taken, *written, false));
+            }
+        }
+    }
+
+    // With no job in flight and no item started, a raw or RLE block at the start of `input`
+    // is fed to the machine from there: `direct` is its size.
+    fn start_direct(&mut self, decoder: &Decoder, input: &[u8]) {
+        let pipeline = &self.pipeline;
+        let idle = self.building.is_none()
+            && self.current.is_none()
+            && pipeline.executed == pipeline.planned
+            && pipeline.planning
+            && !self.checksum_next;
+        if !idle {
+            return;
+        }
+        if let Ok(block) = parse_block_header(input)
+            && block.block_type != BlockType::Compressed
+            && block.input_size() <= decoder.stream.block_size_max()
+        {
+            self.checksum_next = block.last && self.has_checksum;
+            self.pipeline.planning = !block.last || self.has_checksum;
+            self.direct = BLOCK_HEADER_SIZE + block.input_size();
+        }
+    }
+
+    // Starts the next job: takes the next executed block, or hands over to the serial code when
+    // the frame is not planned any further. False if there is nothing to feed for now: the
+    // frame is left (`engaged` cleared), or more input is needed, or the next block is not
+    // decoded yet and the call made progress (`wait` is unset).
+    fn next_job(&mut self, decoder: &mut Decoder, input_ended: bool, wait: bool) -> bool {
+        let pipeline = &mut self.pipeline;
+        if pipeline.executed == pipeline.planned {
+            if pipeline.planning {
+                // The input ends inside an item: the serial code takes what there is of it.
+                if input_ended && let Some(job) = self.building.take() {
+                    pipeline.planning = false;
+                    pipeline.submit(job, false);
+                    return self.next_job(decoder, input_ended, wait);
+                }
+                return false;
+            }
+            // Planning stopped and everything planned is executed: the serial code goes on.
+            if !pipeline.serial {
+                pipeline.hand_over(&mut decoder.literals, &mut decoder.sequences);
+            }
+            self.abandon(decoder);
+            return false;
+        }
+        match pipeline.next_decoded(wait) {
+            Some(job) => self.current = Some((job, 0)),
+            None if wait => panic!("a decoding thread panicked"),
+            None => return false,
+        }
+        true
+    }
+
+    // If the frame whose header is at the start of `input` (after the part the stream holds)
+    // goes through the threads, decodes its header and returns the bytes of `input` it used.
+    // `capacity` is the room in the caller's buffer. The gate: the frame header is whole, the
+    // content size is unknown or large, the frame would not be decoded in one pass, and threads
+    // are available.
+    fn engage(
         &mut self,
         decoder: &mut Decoder,
         input: &[u8],
@@ -588,27 +855,35 @@ impl Streaming {
         let gate = decoder.gate_bytes as u64;
         #[cfg(not(test))]
         let gate = GATE_BYTES as u64;
-        let idle = self.current.is_none() && self.pipeline.executed == self.pipeline.planned;
-        if !(idle && decoder.stream.at_frame_start()) {
-            return Ok(None);
-        }
-        let Ok(FrameStart::Frame(header)) = parse_frame_start(input) else {
+        let Some(held) = decoder.stream.header_held() else {
             return Ok(None);
         };
-        let one_pass = header
-            .content_size
-            .is_some_and(|size| capacity as u64 >= size)
-            && find_frame_size(input).is_ok();
-        if header.content_size.is_some_and(|size| size < gate) || one_pass || !self.start_workers()
-        {
+        let mut start = [0; FRAME_HEADER_SIZE_MAX];
+        start[..held.len()].copy_from_slice(held);
+        let held = held.len();
+        let more = input.len().min(start.len() - held);
+        start[held..held + more].copy_from_slice(&input[..more]);
+        let Ok(FrameStart::Frame(header)) = parse_frame_start(&start[..held + more]) else {
+            return Ok(None);
+        };
+        if header.content_size.is_some_and(|size| size < gate) {
             return Ok(None);
         }
-        decoder.decompress_stream(&input[..header.header_size], &mut [])?;
+        let one_pass = held == 0
+            && header
+                .content_size
+                .is_some_and(|size| capacity as u64 >= size)
+            && find_frame_size(input).is_ok();
+        if one_pass || !self.start_workers() {
+            return Ok(None);
+        }
+        let used = header.header_size - held;
+        decoder.decompress_stream_with(&input[..used], &mut [], &mut SerialBlocks)?;
         let pipeline = &mut self.pipeline;
-        pipeline.planned = 0;
-        pipeline.executed = 0;
+        pipeline.discard_jobs();
         pipeline.planning = true;
         pipeline.serial = false;
+        pipeline.staging = true;
         pipeline.huf = HufDef::default();
         pipeline.tables = TableDefs::default();
         pipeline.dictionary = decoder.sequences.dictionary().cloned();
@@ -618,13 +893,18 @@ impl Streaming {
             flags: (decoder.literals.flags(), decoder.sequences.flags()),
             ..Snapshot::default()
         };
+        #[cfg(test)]
+        {
+            pipeline.fallback_at = decoder.fallback_at.map(|at| pipeline.planned + at);
+        }
         self.has_checksum = header.checksum;
         self.checksum_next = false;
+        self.engaged = true;
         #[cfg(test)]
         {
             self.frames += 1;
         }
-        Ok(Some(header.header_size))
+        Ok(Some(used))
     }
 
     // Spawns the workers on first use; false if none could be.
@@ -645,107 +925,89 @@ impl Streaming {
         !self.workers.is_empty()
     }
 
-    // Feeds `decoder` the next piece of what was read ahead for the frame, writing to
-    // `buf[written..]`; `None` if nothing is left. A piece ends where a chunk of the input did,
-    // and the flag says if `decompress_stream` would have returned there.
-    pub(crate) fn step<R: BufRead>(
-        &mut self,
-        inner: &mut R,
-        decoder: &mut Decoder,
-        buf: &mut [u8],
-        written: usize,
-    ) -> io::Result<Option<(Progress, bool)>> {
-        if self.current.is_none() {
-            while self.pipeline.has_room() {
-                self.plan_next(inner, decoder);
-            }
-            if self.pipeline.executed == self.pipeline.planned {
-                // Planning stopped and everything planned is executed: the serial code goes on.
-                if !self.pipeline.serial {
-                    self.pipeline
-                        .hand_over(&mut decoder.literals, &mut decoder.sequences);
-                }
-                self.pipeline.finish_checksum(&mut decoder.checksum);
-                return Ok(None);
-            }
-            let job = self.pipeline.next_decoded();
-            self.current = Some((
-                job.ok_or_else(|| io::Error::other("a decoding thread panicked"))?,
-                0,
-            ));
+    // Leaves the frame: the serial code (or nobody) goes on. Jobs not executed are dropped
+    // (after an error or a reset), and the hash state is back in the decoder.
+    fn abandon(&mut self, decoder: &mut Decoder) {
+        let pipeline = &mut self.pipeline;
+        pipeline.go_serial();
+        pipeline.finish_checksum(&mut decoder.checksum);
+        pipeline.discard_jobs();
+        if let Some((job, _)) = self.current.take() {
+            pipeline.recycle(job);
         }
-        let Some((job, position)) = self.current.as_mut() else {
-            return Ok(None);
-        };
-        let len = job.bytes.len();
-        let end = job
-            .cuts
-            .iter()
-            .copied()
-            .find(|&cut| cut > *position)
-            .unwrap_or(len);
-        let piece = &job.bytes[*position..end];
-        let mut blocks = StreamBlocks {
-            pipeline: &mut self.pipeline,
-            job,
-        };
-        // After an error, the rest of the input read ahead is fed as it comes, by the serial code.
-        let result = decoder.decompress_stream_with(piece, &mut buf[written..], &mut blocks);
-        if !result.as_ref().is_ok_and(|progress| !progress.frame_done) {
-            // The serial code takes over the checksum too.
-            self.pipeline.go_serial();
-            self.pipeline.finish_checksum(&mut decoder.checksum);
+        if let Some(job) = self.building.take() {
+            pipeline.recycle(job);
         }
-        let progress = result?;
-        let returns = progress.consumed < piece.len()
-            || progress.frame_done
-            || job.cuts.binary_search(&end).is_ok();
-        *position += progress.consumed;
-        if *position == job.bytes.len()
-            && let Some((job, _)) = self.current.take()
-        {
-            self.pipeline.recycle(job);
-        }
-        Ok(Some((progress, returns)))
+        self.direct = 0;
+        self.engaged = false;
     }
 
-    // Stage 1 of the next item of the frame, read from `inner`: a block, or the checksum. The
-    // planning stops at the first item that is not whole, or whose headers do not parse; the
-    // serial code reads what follows, and reports the error.
-    fn plan_next<R: BufRead>(&mut self, inner: &mut R, decoder: &mut Decoder) {
+    // Stage 1 of the items of the frame, as far as `input` and the window allow: the bytes are
+    // copied to the item in progress, and whole items are planned and queued. Returns the bytes
+    // taken. Planning stops at an item whose header does not parse. After a block whose stage 1
+    // fails, the blocks are left to the serial code, which reports the error.
+    fn plan(&mut self, decoder: &mut Decoder, input: &[u8]) -> usize {
         let pipeline = &mut self.pipeline;
-        let mut job = pipeline.free_job();
-        job.bytes.to_mut().clear();
-        job.cuts.clear();
-        job.body = BLOCK_HEADER_SIZE;
-        let mut needs_stage_2 = false;
-        let complete = if self.checksum_next {
-            self.checksum_next = false;
-            pipeline.planning = false;
-            take(inner, CHECKSUM_SIZE, &mut job)
-        } else if !take(inner, BLOCK_HEADER_SIZE, &mut job) {
-            false
-        } else if let Ok(block) = parse_block_header(&job.bytes)
-            && block.input_size() <= pipeline.block_size_max
-        {
-            self.checksum_next = block.last && self.has_checksum;
-            pipeline.planning = !block.last || self.has_checksum;
-            let complete = take(inner, block.input_size(), &mut job);
-            if complete && block.block_type == BlockType::Compressed {
-                let (literals, sequences) = (&mut decoder.literals, &mut decoder.sequences);
-                needs_stage_2 = pipeline.read_headers(&mut job, literals, sequences).is_ok();
-                pipeline.planning &= needs_stage_2;
+        let mut taken = 0;
+        while pipeline.has_room() && (taken < input.len() || self.building.is_some()) {
+            let mut job = self.building.take().unwrap_or_else(|| {
+                (self.item, self.want) = if self.checksum_next {
+                    (Item::Checksum, CHECKSUM_SIZE)
+                } else {
+                    (Item::BlockHeader, BLOCK_HEADER_SIZE)
+                };
+                let mut job = pipeline.free_job();
+                job.bytes.to_mut().clear();
+                job.body = BLOCK_HEADER_SIZE;
+                job
+            });
+            let copied = (self.want - job.bytes.len()).min(input.len() - taken);
+            job.bytes
+                .to_mut()
+                .extend_from_slice(&input[taken..taken + copied]);
+            taken += copied;
+            if job.bytes.len() < self.want {
+                self.building = Some(job);
+                break;
             }
-            complete
-        } else {
-            false
-        };
-        pipeline.planning &= complete;
-        if job.bytes.is_empty() {
-            pipeline.recycle(job);
-        } else {
-            pipeline.submit(job, needs_stage_2);
+            match self.item {
+                Item::BlockHeader => match parse_block_header(&job.bytes) {
+                    Ok(block) if block.input_size() <= pipeline.block_size_max => {
+                        self.checksum_next = block.last && self.has_checksum;
+                        self.frame_ends = block.last && !self.has_checksum;
+                        self.item = Item::Block(block.block_type);
+                        self.want += block.input_size();
+                        self.building = Some(job);
+                    }
+                    _ => {
+                        pipeline.planning = false;
+                        pipeline.submit(job, false);
+                    }
+                },
+                Item::Block(block_type) => {
+                    let mut staged = false;
+                    if block_type == BlockType::Compressed && pipeline.staging {
+                        let (literals, sequences) = (&mut decoder.literals, &mut decoder.sequences);
+                        staged = pipeline.read_headers(&mut job, literals, sequences).is_ok();
+                        pipeline.staging = staged;
+                    }
+                    pipeline.planning = !self.frame_ends;
+                    pipeline.submit(job, staged);
+                }
+                Item::Checksum => {
+                    pipeline.planning = false;
+                    pipeline.submit(job, false);
+                }
+            }
         }
+        taken
+    }
+}
+
+impl Clone for Streaming {
+    // A decoder cloned has its own threads, started when needed.
+    fn clone(&self) -> Self {
+        Self::new(self.threads)
     }
 }
 
@@ -770,21 +1032,22 @@ impl BlockDecoder for StreamBlocks<'_, '_> {
     ) -> Result<usize, Error> {
         let pipeline = &mut *self.pipeline;
         if !pipeline.serial {
-            let job = self.job;
-            #[cfg(test)]
-            let usable = job.usable && pipeline.fallback_at != Some(job.index);
-            #[cfg(not(test))]
-            let usable = job.usable;
-            if usable
-                && job.block().len() == block.len()
-                && let Ok(written) = pipeline.execute(job, output, start, history)
-            {
-                pipeline.boundary = Snapshot {
-                    huf: job.huf_def,
-                    tables: job.table_defs,
-                    flags: job.flags,
-                };
-                return Ok(written);
+            if let Some(job) = self.job {
+                #[cfg(test)]
+                let usable = job.usable && pipeline.fallback_at != Some(job.index);
+                #[cfg(not(test))]
+                let usable = job.usable;
+                if usable
+                    && job.block().len() == block.len()
+                    && let Ok(written) = pipeline.execute(job, output, start, history)
+                {
+                    pipeline.boundary = Snapshot {
+                        huf: job.huf_def,
+                        tables: job.table_defs,
+                        flags: job.flags,
+                    };
+                    return Ok(written);
+                }
             }
             // From the states before this block: the serial code finds its error, and goes on.
             pipeline.hand_over(literals, sequences);
@@ -805,29 +1068,22 @@ impl BlockDecoder for StreamBlocks<'_, '_> {
     }
 }
 
-// Appends `n` bytes of the input to the job, noting the offsets where a chunk of the input
-// ended. False if the input ends or fails first (the serial code meets it again).
-fn take<R: BufRead>(inner: &mut R, mut n: usize, job: &mut Job<'static>) -> bool {
-    let bytes = job.bytes.to_mut();
-    while n > 0 {
-        let Ok(chunk) = inner.fill_buf() else {
-            return false;
-        };
-        let taken = n.min(chunk.len());
-        if taken == 0 {
-            return false;
-        }
-        bytes.extend_from_slice(&chunk[..taken]);
-        if taken == chunk.len() {
-            job.cuts.push(bytes.len());
-        }
-        inner.consume(taken);
-        n -= taken;
-    }
-    true
-}
-
 impl Decoder {
+    // `decompress_stream` with several threads.
+    pub(crate) fn decompress_stream_threaded(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<Progress, Error> {
+        let mut streaming = self
+            .streaming
+            .take()
+            .unwrap_or_else(|| Box::new(Streaming::new(self.threads)));
+        let result = streaming.run(self, input, output);
+        self.streaming = Some(streaming);
+        result
+    }
+
     // `decompress_frame`, through the pipeline if the frame passes the gate. On any error
     // there, the serial code decodes the frame from its start (with the dictionary flags of
     // `begin_frame` as they were).

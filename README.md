@@ -43,7 +43,7 @@ let mut decompressed = Vec::new();
 reader.read_to_end(&mut decompressed)?;
 ```
 
-To decompress large frames on several threads, call `decoder.set_threads(4)` before decompressing, or pass that decoder to `Reader::with_decoder(decoder, file)` (output is identical).
+To decompress large frames on several threads, call `decoder.set_threads(4)` before `decompress_into`, `decompress_stream` or `Reader::with_decoder(decoder, file)` (output is identical).
 
 More advanced options (custom dictionaries, window limits, manual stream stepping) are detailed in the documentation.
 

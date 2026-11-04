@@ -18,6 +18,9 @@ const CHECKSUM_SIZE: usize = 4;
 /// A reusable decoder: keeps its buffers between calls.
 #[derive(Debug, Clone)]
 pub struct Decoder {
+    // Threads of `decompress_stream`, joined first: they may read the stream's ring.
+    #[cfg(feature = "std")]
+    pub(crate) streaming: Option<alloc::boxed::Box<crate::parallel::Streaming>>,
     pub(crate) checksum: XxHash64,
     pub(crate) literals: LiteralsState,
     pub(crate) sequences: SequencesState,
@@ -29,6 +32,9 @@ pub struct Decoder {
     // Frames below this many compressed bytes stay serial.
     #[cfg(test)]
     pub(crate) gate_bytes: usize,
+    // Tests: a block of the streamed frame to hand to the serial code although it is usable.
+    #[cfg(test)]
+    pub(crate) fallback_at: Option<usize>,
     // Frames that went through the pipeline, and that it redid serially.
     #[cfg(test)]
     pub(crate) pipelined_frames: usize,
@@ -86,6 +92,8 @@ impl Decoder {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "std")]
+            streaming: None,
             checksum: XxHash64::with_seed(0),
             literals: LiteralsState::new(),
             sequences: SequencesState::new(),
@@ -96,6 +104,8 @@ impl Decoder {
             threads: 1,
             #[cfg(test)]
             gate_bytes: 0,
+            #[cfg(test)]
+            fallback_at: None,
             #[cfg(test)]
             pipelined_frames: 0,
             #[cfg(test)]
@@ -120,14 +130,21 @@ impl Decoder {
     }
 
     /// Sets the threads (this one included) of [`Decoder::decompress_into`] and its variants,
-    /// and of a [`Reader`](crate::Reader) made with this decoder. A frame of at least a few
-    /// blocks is decoded by threads spawned for the call, frames in order; a `Reader` does so
-    /// for frames of unknown or large (256 KiB or more) content size, with threads that last
-    /// as long as it, and reads the input a few blocks per thread ahead of the output. The
-    /// output is the same as with 0 or 1 thread (the default), which is serial.
+    /// of [`Decoder::decompress_stream`] and of a [`Reader`](crate::Reader) made with this
+    /// decoder. The output is the same as with 0 or 1 thread (the default), which is serial.
+    ///
+    /// A frame of at least a few blocks is decoded by threads spawned for the call, frames in
+    /// order. A streamed frame of unknown or large (256 KiB or more) content size is decoded by
+    /// threads that last as long as the decoder, which reads the input a few blocks per thread
+    /// ahead of the output: see [`Decoder::decompress_stream`] for what that changes. Changing
+    /// the threads abandons a stream in progress.
     #[cfg(feature = "std")]
-    pub const fn set_threads(&mut self, threads: usize) {
-        self.threads = threads;
+    pub fn set_threads(&mut self, threads: usize) {
+        if threads != self.threads {
+            self.threads = threads;
+            self.streaming = None;
+            self.stream.reset();
+        }
     }
 
     /// Decodes every following frame with `dictionary` (`ZSTD_DCtx_loadDictionary`), or

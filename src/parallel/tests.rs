@@ -7,6 +7,8 @@ use crate::dict::Dictionary;
 use crate::frame::scan_frame;
 use crate::testing::{Rng, TestTree, assert_same, huffman_section};
 
+mod stream;
+
 const MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
 const THREADS: [usize; 4] = [2, 3, 4, 8];
@@ -129,77 +131,48 @@ fn a_small_multi_block_frame_decodes_on_threads() {
     }
 }
 
-// Bytes read, how the reads ended, and the frames that went through the threads.
-type Pieces = (
-    Vec<u8>,
-    Option<(io::ErrorKind, Option<alloc::string::String>)>,
-    usize,
-);
-
-// What a `Reader` with `threads` over `input`, in chunks of 97 bytes, gives when read 50 bytes at
-// a time: the bytes, how it ended, and the frames that went through the threads.
-fn read_in_pieces(input: &[u8], threads: usize) -> Pieces {
-    use std::io::{BufReader, Read};
-    use std::string::ToString;
-
-    let mut decoder = Decoder::new();
-    decoder.set_threads(threads);
-    let mut reader = crate::Reader::with_decoder(decoder, BufReader::with_capacity(97, input));
-    let (mut bytes, mut buf) = (Vec::new(), [0; 50]);
-    let end = loop {
-        match reader.read(&mut buf) {
-            Ok(0) => break None,
-            Ok(read) => bytes.extend_from_slice(&buf[..read]),
-            Err(error) => break Some((error.kind(), error.get_ref().map(ToString::to_string))),
-        }
-    };
-    let frames = reader.streaming_mut().map_or(0, |s| s.frames);
-    (bytes, end, frames)
-}
-
-// The same small frame through a `Reader` with threads, in chunks of 97 bytes (blocks end in the
-// middle of chunks), read 50 bytes at a time; whole and cut.
+// The same small frame through `decompress_stream` and `Reader` with threads, whole and cut
+// anywhere (the inputs end inside a block).
 #[test]
-fn a_small_multi_block_frame_reads_on_threads() {
+fn a_small_multi_block_frame_streams_on_threads() {
     let frame = include_bytes!("../../tests/data/threaded-small.zst");
-    let (expected, end, _) = read_in_pieces(frame, 1);
-    assert_eq!((expected.len(), end), (3500, None));
-    let (bytes, end, frames) = read_in_pieces(frame, 2);
-    assert_eq!((end, frames), (None, 1));
-    assert_same(&bytes, &expected, "small frame, reader");
+    let reference = stream::reference(None, frame);
+    assert_eq!((reference.bytes.len(), reference.error), (3500, None));
+    stream::assert_decodes(None, frame, &reference.bytes, 1, "small frame");
     for length in (0..frame.len()).step_by(if cfg!(miri) { 211 } else { 1 }) {
-        let (serial_bytes, serial_end, _) = read_in_pieces(&frame[..length], 1);
-        let (bytes, end, _) = read_in_pieces(&frame[..length], 3);
-        assert_eq!(end, serial_end, "cut at {length}");
-        assert_same(&bytes, &serial_bytes, "cut small frame, reader");
+        stream::assert_same_as_serial(None, &frame[..length], length, 0, "cut small frame");
     }
 }
 
-// Reads of `read_size` bytes from a `Reader` over `data` in one chunk, window of 1 MiB, the
-// results (and bytes) up to the first error or the end: the fuzz target's way.
-fn reads_to_the_end(
-    data: &[u8],
-    threads: usize,
-    read_size: usize,
-) -> Vec<(Result<usize, std::string::String>, Vec<u8>)> {
-    use std::io::Read;
-    let mut decoder = Decoder::new();
-    decoder.set_window_log_max(20);
-    decoder.set_threads(threads);
-    let mut reader = crate::Reader::with_decoder(decoder, data);
-    let mut reads = Vec::new();
-    loop {
-        let mut buf = vec![0; read_size];
-        let result = reader
-            .read(&mut buf)
-            .map_err(|error| alloc::string::ToString::to_string(&error));
-        buf.truncate(*result.as_ref().unwrap_or(&0));
-        let go_on = matches!(result, Ok(1..));
-        reads.push((result, buf));
-        if !go_on {
-            return reads;
-        }
+// One run of the small frame through `decompress_stream` and a `Reader` with threads, in odd
+// pieces, whole and cut in a block: small enough for Miri.
+#[test]
+fn a_small_multi_block_frame_streams_on_threads_in_odd_pieces() {
+    use stream::Piece::Fixed;
+    let frame = include_bytes!("../../tests/data/threaded-small.zst");
+    let reference = stream::reference(None, frame);
+    assert_eq!(reference.bytes.len(), 3500);
+    let shape = stream::shape(Fixed(97), Fixed(50));
+    let run = stream::drive_stream(stream::decoder(None, 2, 0), frame, shape);
+    assert_eq!((run.frames, run.fallbacks, run.handovers), (1, 0, 0));
+    stream::assert_matches(&run, &reference, "odd pieces");
+    let run = stream::drive_reader(stream::decoder(None, 3, 0), &frame[..], 50);
+    assert_eq!((run.frames, run.fallbacks, run.handovers), (1, 0, 0));
+    stream::assert_matches(&run, &reference, "reader");
+    // Output that the content fills exactly: the call that completes the frame writes nothing.
+    for read_size in [3500, 1750] {
+        let source = stream::source(frame, 97);
+        let run = stream::drive_reader(stream::decoder(None, 2, 0), source, read_size);
+        assert_eq!(run.frames, 1);
+        stream::assert_matches(&run, &reference, "exact reads");
+        let shape = stream::shape(Fixed(97), Fixed(read_size));
+        let run = stream::drive_stream(stream::decoder(None, 2, 0), frame, shape);
+        stream::assert_matches(&run, &reference, "exact output");
     }
+    let cut = &frame[..frame.len() * 2 / 3];
+    let reference = stream::reference(None, cut);
+    let run = stream::drive_stream(stream::decoder(None, 2, 0), cut, shape);
+    stream::assert_matches(&run, &reference, "cut");
 }
 
 // Found by the fuzz target: planning stopped (the rest of the input is read by the serial code)
@@ -210,13 +183,17 @@ fn the_serial_code_going_on_after_the_pipeline_has_the_tables_of_the_last_block(
     let data =
         &include_bytes!("../../crates/compare/tests/data/parallel-stale-tables-after-planning.bin")
             [3..];
-    let serial = reads_to_the_end(data, 1, 536);
-    assert!(serial.len() > 80, "{}", serial.len());
-    for threads in THREADS {
-        assert!(
-            reads_to_the_end(data, threads, 536) == serial,
-            "{threads} threads"
-        );
+    let mut windowed = Decoder::new();
+    windowed.set_window_log_max(20);
+    let reference = stream::reference_with(windowed, data);
+    assert!(reference.bytes.len() > 40_000, "{}", reference.bytes.len());
+    for (index, threads) in THREADS.into_iter().enumerate() {
+        for shape in &stream::SHAPES[index..] {
+            let mut decoder = stream::decoder(None, threads, 0);
+            decoder.set_window_log_max(20);
+            let run = stream::drive_stream(decoder, data, *shape);
+            stream::assert_matches(&run, &reference, &format!("{threads} threads, {shape:?}"));
+        }
     }
 }
 
@@ -227,13 +204,17 @@ fn a_block_that_fails_after_its_sequences_leaves_the_repeat_offsets_alone() {
     let data = &include_bytes!(
         "../../crates/compare/tests/data/parallel-repeat-offsets-of-failed-block.bin"
     )[3..];
-    let serial = reads_to_the_end(data, 1, 982);
-    assert_eq!(serial.len(), 1);
-    for threads in THREADS {
-        assert!(
-            reads_to_the_end(data, threads, 982) == serial,
-            "{threads} threads"
-        );
+    let mut windowed = Decoder::new();
+    windowed.set_window_log_max(20);
+    let reference = stream::reference_with(windowed, data);
+    assert_eq!(reference.error, Some(Error::DstSizeTooSmall));
+    for (index, threads) in THREADS.into_iter().enumerate() {
+        for shape in &stream::SHAPES[index..] {
+            let mut decoder = stream::decoder(None, threads, 0);
+            decoder.set_window_log_max(20);
+            let run = stream::drive_stream(decoder, data, *shape);
+            stream::assert_matches(&run, &reference, &format!("{threads} threads, {shape:?}"));
+        }
     }
 }
 
@@ -274,15 +255,17 @@ fn a_tree_that_does_not_build_fails_the_same_with_treeless_sections_after_it() {
             // It failed in stage 2, not in stage 1: the frame went through the threads, and was redone.
             let run = decode(None, &frame, 1200, 2);
             assert_eq!((run.pipelined, run.redone), (1, 1), "{what}");
-            let (bytes, end, _) = read_in_pieces(&frame, 1);
-            for threads in THREADS {
-                let (threaded, threaded_end, frames) = read_in_pieces(&frame, threads);
-                assert_eq!(
-                    (threaded_end, frames),
-                    (end.clone(), 1),
-                    "{what}, {threads} threads"
+            let reference = stream::reference(None, &frame);
+            assert_eq!(reference.error, Some(Error::CorruptionDetected), "{what}");
+            for (index, threads) in THREADS.into_iter().enumerate() {
+                let shape = stream::SHAPES[(case as usize + index) % stream::SHAPES.len()];
+                let run = stream::drive_stream(stream::decoder(None, threads, 0), &frame, shape);
+                assert_eq!(run.frames, 1, "{what}, {threads} threads");
+                stream::assert_matches(
+                    &run,
+                    &reference,
+                    &format!("{what}, {threads} threads, {shape:?}"),
                 );
-                assert_same(&threaded, &bytes, &what);
             }
         }
     }
@@ -304,7 +287,7 @@ mod against_libzstd {
     };
     use crate::testing::skewed_bytes;
 
-    mod reader;
+    mod threaded;
 
     // Words from a vocabulary with a skewed choice, separated by spaces and punctuation.
     fn text(vocabulary_seed: u64, seed: u64, len: usize) -> Vec<u8> {

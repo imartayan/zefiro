@@ -340,3 +340,12 @@ fn vec_output_ignores_a_content_size_above_the_blocks() {
     assert_eq!(result, Err(Error::CorruptionDetected));
     assert!(output.capacity() < 1 << 20);
 }
+
+// A decoder with threads can move to another thread, and be shared.
+#[test]
+fn a_decoder_and_a_reader_are_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Decoder>();
+    #[cfg(feature = "std")]
+    assert_send_sync::<crate::Reader<&[u8]>>();
+}

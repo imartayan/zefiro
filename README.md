@@ -83,12 +83,14 @@ cargo r -r -p compare --bin bench -- --exhaustive
 | One-shot, 4 threads | **+81.8%** | +36.8% | - | - | - |
 | Stream, 4 threads | **+92.7%** | +37.7% | - | - | - |
 
-#### x86 (AMD Zen 3, 2026-10-30)
+#### x86 (AMD Zen 3, 2026-11-04)
 
 | Mode | zefiro | rust-zstd | ruzstd | zrip | mzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | +3.3% | **+6.9%** | -72.7% | -28.8% | -0.6% |
-| Stream | +3.2% | **+6.6%** | -67.9% | -55.2% | -3.0% |
+| One-shot | +5.8% | **+10.5%** | -72.3% | -27.0% | +2.0% |
+| Stream | +5.2% | **+8.4%** | -67.9% | -50.7% | -2.7% |
+| One-shot, 4 threads | **+65.3%** | +47.8% | - | - | - |
+| Stream, 4 threads | **+60.5%** | +33.5% | - | - | - |
 
 ## Acknowledgements
 

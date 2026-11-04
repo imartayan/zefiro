@@ -162,18 +162,6 @@ fn frames_without_a_content_size_behind_skippable_frames_stream_threaded() {
         expected.extend(data);
     }
     assert_decodes(None, &input, &expected, 3, "pzstd-like");
-    for threads in [0, 2, 4, 8] {
-        assert_eq!(
-            crate::decompress(&input, usize::MAX, threads).as_ref(),
-            Ok(&expected)
-        );
-    }
-    // Frames ending where the growing output is full.
-    for len in [1 << 16, 1 << 17, 3 << 16, 1 << 18] {
-        let data = mixed(4, len);
-        let input = compress_with_size(&data, 3, 0, true, false, &[]);
-        assert_eq!(crate::decompress(&input, usize::MAX, 4), Ok(data), "{len}");
-    }
 }
 
 // Treeless sections after a table scaled in place, then a block cut or corrupted anywhere.

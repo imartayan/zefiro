@@ -177,7 +177,6 @@ fn skippable_frames() {
     assert_eq!(skippable_frame_size(&frame), Ok(11));
     frame.push(9);
     assert_eq!(skippable_frame_size(&frame), Ok(11));
-    assert_eq!(frame_content_size(&frame), Ok(Some(0)));
     assert!(is_skippable_magic(&frame));
     assert!(!is_skippable_magic(&frame[1..]));
     assert!(!is_skippable_magic(&frame[..3]));
@@ -190,21 +189,6 @@ fn skippable_frames() {
     );
     huge[4..].copy_from_slice(&0xFFFF_FFF7u32.to_le_bytes());
     assert_eq!(skippable_frame_size(&huge), Err(Error::SrcSizeWrong));
-}
-
-#[test]
-fn content_size_api() {
-    assert_eq!(frame_content_size(&with_magic(&[0x20, 9])), Ok(Some(9)));
-    assert_eq!(frame_content_size(&with_magic(&[0x00, 0x00])), Ok(None));
-    assert_eq!(frame_content_size(&[]), Err(Error::SrcSizeWrong));
-    assert_eq!(
-        frame_content_size(&[1, 2, 3, 4, 5, 6]),
-        Err(Error::PrefixUnknown)
-    );
-    assert_eq!(
-        frame_content_size(&with_magic(&[0x20])),
-        Err(Error::SrcSizeWrong)
-    );
 }
 
 #[test]
@@ -339,4 +323,25 @@ mod against_libzstd {
         }
         assert!(kinds.iter().all(|&n| n > 5000), "{kinds:?}");
     }
+}
+
+#[test]
+fn frame_info_of_a_frame_and_a_skippable_frame() {
+    // Single segment, 1-byte content size 5, one last raw block of 5 bytes.
+    let frame = with_magic(&[0x20, 5, (1 | 5 << 3) as u8, 0, 0, 1, 2, 3, 4, 5]);
+    let info = FrameInfo::parse(&frame).unwrap();
+    assert_eq!(
+        (info.compressed_len, info.content_len),
+        (frame.len(), Some(5))
+    );
+    assert_eq!((info.max_uncompressed_len, info.is_skippable), (5, false));
+    assert_eq!(
+        FrameInfo::parse(&frame[..frame.len() - 1]),
+        Err(Error::SrcSizeWrong)
+    );
+    let mut skippable = SKIPPABLE_MAGIC.to_le_bytes().to_vec();
+    skippable.extend_from_slice(&[2, 0, 0, 0, 7, 7]);
+    let info = FrameInfo::parse(&skippable).unwrap();
+    assert_eq!((info.compressed_len, info.content_len), (10, Some(0)));
+    assert_eq!((info.max_uncompressed_len, info.is_skippable), (0, true));
 }

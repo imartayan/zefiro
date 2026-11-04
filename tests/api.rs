@@ -4,7 +4,7 @@
 
 use std::io::{BufReader, Cursor, ErrorKind, Read};
 
-use zefiro::{Decoder, Error, FrameInfo, Reader, decompress, frame_info};
+use zefiro::{Decoder, Error, Reader};
 
 const MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
@@ -47,6 +47,12 @@ fn read_all(input: &[u8], buffer_capacity: usize) -> std::io::Result<Vec<u8>> {
     reader.read_to_end(&mut output).map(|_| output)
 }
 
+fn decompress(input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::new();
+    Decoder::new().decompress_into_vec(input, &mut output)?;
+    Ok(output)
+}
+
 fn data(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i * 31 % 251) as u8).collect()
 }
@@ -62,33 +68,32 @@ fn decompress_with_known_and_unknown_sizes() {
         ]
         .concat();
         let expected = [&a[..], &b[..]].concat();
-        assert_eq!(decompress(&input, expected.len(), 1), Ok(expected.clone()));
-        assert_eq!(decompress(&input, usize::MAX, 1), Ok(expected.clone()));
+        assert_eq!(decompress(&input), Ok(expected.clone()));
+        // Raw blocks: the block bound is exact.
         assert_eq!(
-            decompress(&input, expected.len() - 1, 1),
-            Err(Error::DstSizeTooSmall)
+            Decoder::decompressed_bound(&input),
+            Ok(expected.len() as u64)
         );
-        assert_eq!(decompress(&input, 0, 1), Err(Error::DstSizeTooSmall));
     }
 }
 
 #[test]
 fn decompress_empty_and_broken_inputs() {
-    assert_eq!(decompress(&[], 0, 1), Ok(vec![]));
-    assert_eq!(decompress(&skippable(b""), 0, 1), Ok(vec![]));
+    assert_eq!(decompress(&[]), Ok(vec![]));
+    assert_eq!(decompress(&skippable(b"")), Ok(vec![]));
     let good = frame(&data(300), 300, false);
     assert_eq!(
-        decompress(&good[..good.len() - 1], 1000, 1),
+        decompress(&good[..good.len() - 1]),
         Err(Error::SrcSizeWrong)
     );
-    assert_eq!(decompress(&good[..9], 1000, 1), Err(Error::SrcSizeWrong));
+    assert_eq!(decompress(&good[..9]), Err(Error::SrcSizeWrong));
     assert_eq!(
-        decompress(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 1000, 1),
+        decompress(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
         Err(Error::PrefixUnknown)
     );
     let legacy_v07 = [0x27, 0xB5, 0x2F, 0xFD, 0, 0, 0, 0, 0, 0];
     assert_eq!(
-        decompress(&legacy_v07, 1000, 1),
+        decompress(&legacy_v07),
         Err(Error::LegacyFormatUnsupported(7))
     );
     assert_eq!(
@@ -97,18 +102,24 @@ fn decompress_empty_and_broken_inputs() {
     );
     let sized = frame(&data(300), 300, true);
     assert_eq!(
-        decompress(&sized[..sized.len() - 1], 1000, 1),
+        decompress(&sized[..sized.len() - 1]),
         Err(Error::SrcSizeWrong)
     );
     // A frame stating a size it does not have.
     let mut lying = sized;
     lying[5..9].copy_from_slice(&400u32.to_le_bytes());
-    assert_eq!(decompress(&lying, 1000, 1), Err(Error::CorruptionDetected));
-    // A huge stated size is refused before anything is allocated.
+    assert_eq!(decompress(&lying), Err(Error::CorruptionDetected));
+    // A huge stated size is capped by the blocks, then the frame is found short.
     let mut huge = vec![0x28, 0xB5, 0x2F, 0xFD, 0xE0];
     huge.extend_from_slice(&(1u64 << 40).to_le_bytes());
     huge.extend_from_slice(&block(true, 0, 0, &[]));
-    assert_eq!(decompress(&huge, 1 << 20, 1), Err(Error::DstSizeTooSmall));
+    assert_eq!(decompress(&huge), Err(Error::CorruptionDetected));
+    assert_eq!(Decoder::decompressed_bound(&huge), Ok(0));
+    assert_eq!(
+        Decoder::decompressed_bound(&good[..9]),
+        Err(Error::SrcSizeWrong)
+    );
+    assert_eq!(Decoder::decompressed_bound(&[]), Ok(0));
 }
 
 #[test]
@@ -226,55 +237,6 @@ fn reader_with_decoder_abandons_a_stream_in_progress() {
     let mut output = Vec::new();
     reader.read_to_end(&mut output).unwrap();
     assert_eq!(output, data(3000));
-}
-
-#[test]
-fn frame_info_inspects_frames_and_skippable_frames() {
-    let d = data(3000);
-    let sized = frame(&d, 1000, true);
-    let info = frame_info(&sized).unwrap();
-    assert_eq!(
-        info,
-        FrameInfo {
-            compressed_len: sized.len(),
-            content_len: Some(3000),
-            max_uncompressed_len: 3000,
-            is_skippable: false,
-        }
-    );
-
-    let unsized_frame = frame(&d, 1000, false);
-    let info = frame_info(&unsized_frame).unwrap();
-    assert_eq!(info.compressed_len, unsized_frame.len());
-    assert_eq!(info.content_len, None);
-    assert!(info.max_uncompressed_len >= 3000);
-    assert!(!info.is_skippable);
-
-    let skip = skippable(b"hello world");
-    let info = frame_info(&skip).unwrap();
-    assert_eq!(
-        info,
-        FrameInfo {
-            compressed_len: skip.len(),
-            content_len: Some(0),
-            max_uncompressed_len: 0,
-            is_skippable: true,
-        }
-    );
-
-    // Multi-frame iteration via frame_info.
-    let multi = [sized.clone(), skip.clone(), unsized_frame.clone()].concat();
-    let mut rest = &multi[..];
-    let mut frames = Vec::new();
-    while !rest.is_empty() {
-        let info = frame_info(rest).unwrap();
-        frames.push(info);
-        rest = &rest[info.compressed_len..];
-    }
-    assert_eq!(frames.len(), 3);
-    assert_eq!(frames[0].compressed_len, sized.len());
-    assert_eq!(frames[1].compressed_len, skip.len());
-    assert_eq!(frames[2].compressed_len, unsized_frame.len());
 }
 
 #[test]

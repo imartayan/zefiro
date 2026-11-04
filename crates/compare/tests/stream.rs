@@ -8,7 +8,7 @@ use compare::*;
 use proptest::prelude::*;
 use proptest::sample::Index;
 use proptest::test_runner::TestRunner;
-use zefiro::{Error, Reader, decompress};
+use zefiro::{Decoder, Reader};
 
 /// Cases of the randomized tests: many in release builds.
 const CASES: u32 = if cfg!(debug_assertions) { 3000 } else { 40_000 };
@@ -497,15 +497,13 @@ fn reader_and_decompress_on_valid_streams() {
         let Outcome::Ok { output, .. } = theirs else {
             panic!("{}: {theirs:?}", base.name);
         };
-        assert!(
-            decompress(&base.input, output.len(), 1).unwrap() == output,
-            "{}",
-            base.name
-        );
-        if !output.is_empty() {
-            let error = decompress(&base.input, output.len() - 1, 1).unwrap_err();
-            assert_eq!(error, Error::DstSizeTooSmall, "{}", base.name);
-        }
+        let mut vec = Vec::new();
+        Decoder::new()
+            .decompress_into_vec(&base.input, &mut vec)
+            .unwrap();
+        assert!(vec == output, "{}", base.name);
+        let bound = Decoder::decompressed_bound(&base.input).unwrap();
+        assert!(bound >= output.len() as u64, "{}", base.name);
     }
 }
 

@@ -6,7 +6,7 @@ use crate::dict::Dictionary;
 use crate::error::Error;
 use crate::frame::{
     BLOCK_HEADER_SIZE, BlockType, FRAME_HEADER_MIN_SIZE, FRAME_HEADER_PREFIX_SIZE, FrameHeader,
-    FrameStart, decompressed_bound, frame_header_size, is_skippable_magic, parse_block_header,
+    FrameInfo, FrameStart, frame_header_size, is_skippable_magic, parse_block_header,
     parse_frame_start, read_le32, skippable_frame_size,
 };
 use crate::literals::{Literals, LiteralsState};
@@ -223,6 +223,21 @@ impl Decoder {
         }
     }
 
+    /// An upper bound on the decompressed length of the frames of `input`, like
+    /// `ZSTD_decompressBound`: what each frame states, capped by what its blocks can hold.
+    ///
+    /// Walks the block headers (bodies skipped): `input` must hold whole frames, else the error
+    /// of the first one that does not parse.
+    pub fn decompressed_bound(mut input: &[u8]) -> Result<u64, Error> {
+        let mut bound = 0u64;
+        while !input.is_empty() {
+            let info = FrameInfo::parse(input)?;
+            bound = bound.saturating_add(info.max_uncompressed_len);
+            input = &input[info.compressed_len..];
+        }
+        Ok(bound)
+    }
+
     /// Decodes every frame of `input` into `out` like [`Decoder::decompress_into`], replacing
     /// its content without zero-filling. `out` grows to the sum of the frames' sizes, or of
     /// their bounds for frames that do not state it.
@@ -233,7 +248,10 @@ impl Decoder {
     ) -> Result<usize, Error> {
         out.clear();
         // A bound too large to allocate is left to fail as `DstSizeTooSmall`.
-        if let Ok(bound) = usize::try_from(decompressed_bound(input)) {
+        if let Some(bound) = Self::decompressed_bound(input)
+            .ok()
+            .and_then(|b| usize::try_from(b).ok())
+        {
             let _ = out.try_reserve(bound);
         }
         let written = self.decompress_into_uninit(input, out.spare_capacity_mut())?;

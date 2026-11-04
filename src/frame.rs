@@ -63,16 +63,6 @@ impl BlockHeader {
     }
 }
 
-/// Describes the frame at the start of `src` like `ZSTD_getFrameContentSize`.
-/// `Ok(None)` is an unknown size; a skippable frame has size 0.
-pub(crate) fn frame_content_size(src: &[u8]) -> Result<Option<u64>, Error> {
-    match parse_frame_start(src)? {
-        FrameStart::Frame(header) => Ok(header.content_size),
-        FrameStart::Skippable { .. } => Ok(Some(0)),
-        FrameStart::NeedMore(_) => Err(Error::SrcSizeWrong),
-    }
-}
-
 pub(crate) const fn legacy_version(magic: u32) -> Option<u8> {
     if magic & 0xFFFF_FF00 != LEGACY_PREFIX {
         return None;
@@ -203,7 +193,7 @@ pub(crate) fn is_skippable_magic(src: &[u8]) -> bool {
 
 /// Information about a single zstd or skippable frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameInfo {
+pub(crate) struct FrameInfo {
     /// Exact compressed byte length of this frame (headers, blocks, and checksum).
     pub compressed_len: usize,
     /// Exact uncompressed byte length if recorded in the frame header.
@@ -214,15 +204,17 @@ pub struct FrameInfo {
     pub is_skippable: bool,
 }
 
-/// Inspects the frame starting at `src` without decompressing it.
-///
-/// The frame header does not store the compressed length, so this walks the block headers
-/// (bodies skipped): `src` must hold the whole frame, else [`Error::SrcSizeWrong`].
-pub fn frame_info(src: &[u8]) -> Result<FrameInfo, Error> {
-    scan_frame(src).map(|(info, _)| info)
+impl FrameInfo {
+    /// Inspects the frame starting at `src` without decompressing it.
+    ///
+    /// The frame header does not store the compressed length, so this walks the block
+    /// headers (bodies skipped): `src` must hold the whole frame, else [`Error::SrcSizeWrong`].
+    pub(crate) fn parse(src: &[u8]) -> Result<Self, Error> {
+        scan_frame(src).map(|(info, _)| info)
+    }
 }
 
-// `frame_info` and the number of compressed blocks of the frame.
+// `FrameInfo::parse` and the number of compressed blocks of the frame.
 pub(crate) fn scan_frame(src: &[u8]) -> Result<(FrameInfo, usize), Error> {
     if is_skippable_magic(src) {
         let compressed_len = skippable_frame_size(src)?;
@@ -273,21 +265,10 @@ pub(crate) fn scan_frame(src: &[u8]) -> Result<(FrameInfo, usize), Error> {
     Ok((info, compressed_blocks))
 }
 
-// `ZSTD_decompressBound`: the sum of the frames' bounds, up to the first frame that does not
-// parse (the decode fails there anyway).
-pub(crate) fn decompressed_bound(mut src: &[u8]) -> u64 {
-    let mut bound = 0u64;
-    while let Ok(info) = frame_info(src) {
-        bound = bound.saturating_add(info.max_uncompressed_len);
-        src = &src[info.compressed_len..];
-    }
-    bound
-}
-
 // `ZSTD_findFrameCompressedSize`: size of the (skippable) frame at the start of `src`,
 // from its block headers.
 pub(crate) fn find_frame_size(src: &[u8]) -> Result<usize, Error> {
-    frame_info(src).map(|info| info.compressed_len)
+    FrameInfo::parse(src).map(|info| info.compressed_len)
 }
 
 // `ZSTD_getcBlockSize`.

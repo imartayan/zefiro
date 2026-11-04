@@ -94,8 +94,9 @@ def strip_cfg_test(code: str) -> str:
             attr_end = code.find("]", i)
             if attr_end != -1:
                 attr = code[i : attr_end + 1]
-                # Check if this attribute gates on test and is not negated: not(test)
-                if re.search(r"\btest\b", attr) and not re.search(r"not\(\s*test\s*\)", attr):
+                # Only `cfg(test)` and `cfg(all(test, ..))` require test, not `any(test, ..)`.
+                test_only = re.fullmatch(r"#\[cfg\(\s*(test|all\(.*\btest\b.*\))\s*\)\]", attr)
+                if test_only and not re.search(r"not\(\s*test\s*\)", attr):
                     i = attr_end + 1
                     # Skip whitespace, comments, and consecutive attributes
                     while i < n:
@@ -113,15 +114,25 @@ def strip_cfg_test(code: str) -> str:
                         else:
                             break
 
-                    # Skip the item: either ending at ';' or balanced '{ ... }'
+                    # Skip the item: up to ';' or a balanced '{ ... }', or up to ',' for a
+                    # field or argument; stop before the ')', ']' or '}' that encloses it.
                     brace_depth = 0
+                    nesting = 0
                     while i < n:
                         c = code[i]
                         if c == '"':
                             end = code.find('"', i + 1)
                             i = n if end == -1 else end + 1
                             continue
-                        if c == ";":
+                        if c in "([":
+                            nesting += 1
+                        elif c in ")]":
+                            if nesting == 0:
+                                break
+                            nesting -= 1
+                        elif c == "}" and nesting == 0:
+                            break
+                        if c == ";" or (c == "," and nesting == 0):
                             i += 1
                             break
                         if c == "{":

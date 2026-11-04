@@ -117,6 +117,7 @@ fn decodecorpus_frames_with_a_dictionary_decode_like_libzstd() {
     sets.sort();
     if sets.is_empty() {
         eprintln!("skipped: run SET=-10k scripts/decodecorpus.sh 300 1 --use-dict=10240");
+        return;
     }
     let mut rng = Rng::with_seed(0xD1C7_C0DE);
     let (mut frames, mut differing) = (0, 0);

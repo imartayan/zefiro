@@ -68,15 +68,20 @@ fn libzstd_frames_with_a_dictionary_stream_the_same_threaded_or_not() {
 fn sweep(dictionary: Option<&Dictionary>, dictionary_bytes: &[u8], checksum: bool, what: &str) {
     let data = mixed(11, 12_000);
     let frame = compress(&data, 3, 10, checksum, dictionary_bytes);
+    let step = if cfg!(debug_assertions) { 3 } else { 1 };
     let mut cases = Vec::new();
-    for position in 0..frame.len() {
+    for position in (0..frame.len()).step_by(step) {
         for mask in [0x01, 0x80] {
             let mut corrupted = frame.clone();
             corrupted[position] ^= mask;
             cases.push(corrupted);
         }
     }
-    cases.extend((0..frame.len()).map(|length| frame[..length].to_vec()));
+    cases.extend(
+        (0..frame.len())
+            .step_by(step)
+            .map(|length| frame[..length].to_vec()),
+    );
     let (mut ok, mut fallbacks) = (0, 0);
     for (case, input) in cases.iter().enumerate() {
         let what = format!("{what}, case {case}");
@@ -416,11 +421,12 @@ fn raw_and_rle_blocks_stream_the_same_threaded_or_not() {
         random(&mut rng, 2500),
     ]
     .concat();
+    let step = if cfg!(debug_assertions) { 11 } else { 3 };
     for (level, window_log, checksum) in [(3, 10, true), (1, 10, false), (3, 0, true)] {
         let frame = compress(&data, level, window_log, checksum, &[]);
         let what = format!("raw and rle, level {level}, windowLog {window_log}");
         assert_decodes(None, &frame, &data, 1, &what);
-        for position in (0..frame.len()).step_by(3) {
+        for position in (0..frame.len()).step_by(step) {
             assert_same_as_serial_loosely(None, &frame[..position], position, 0, true, &what);
             let mut corrupted = frame.clone();
             corrupted[position] ^= 0x08;

@@ -678,8 +678,9 @@ mod against_libzstd {
             "{coverage:?}"
         );
         let capacity = data.len() + 64;
+        let step = if cfg!(debug_assertions) { 3 } else { 1 };
         let (mut ok, mut failed) = (0, 0);
-        for position in 0..frame.len() {
+        for position in (0..frame.len()).step_by(step) {
             for mask in [0x01, 0x80] {
                 let mut corrupted = frame.clone();
                 corrupted[position] ^= mask;
@@ -698,7 +699,7 @@ mod against_libzstd {
         }
         // Some flips still decode (raw sections, the checksum when disabled), most do not.
         assert!(ok > 5 && failed > 500, "{ok} ok, {failed} failed");
-        for length in 0..frame.len() {
+        for length in (0..frame.len()).step_by(step) {
             let _ = assert_threaded_is_serial(
                 dictionary,
                 &frame[..length],

@@ -38,8 +38,6 @@ const DEFAULT_ROUNDS: usize = 10;
 const MIB: f64 = (1 << 20) as f64;
 // Ratios to zstd within this band are printed without color.
 const RATIO_NOISE: f64 = 0.02;
-const USAGE: &str = "usage: bench [--rounds N] [--case SUBSTRING[,..]] [--impl NAME[,..]] \
-                     [--file PATH.zst[,..]] [--tsv FILE] [--md] [--exhaustive] [--mt THREADS] [--speed] (a colored table on a terminal, TSV otherwise)";
 
 const DEFAULT_IMPLS: &[&str] = &[
     "zefiro",
@@ -77,17 +75,35 @@ pub struct Row {
     pub best: Duration,
 }
 
-#[derive(Debug)]
+/// Benchmarks the decoders: a colored table on a terminal, TSV otherwise.
+#[derive(Debug, clap::Parser)]
 struct Args {
+    /// Best of this many runs per case and impl.
+    #[arg(short, long, default_value_t = DEFAULT_ROUNDS, value_parser = positive())]
     rounds: usize,
+    /// Cases whose name contains one of these.
+    #[arg(short, long = "case", value_delimiter = ',')]
     cases: Vec<String>,
+    /// Impls to run, by name.
+    #[arg(short, long = "impl", value_delimiter = ',')]
     impls: Vec<String>,
+    /// Extra cases from .zst files.
+    #[arg(short, long = "file", value_delimiter = ',')]
     files: Vec<PathBuf>,
+    /// Write the TSV to this file.
+    #[arg(short = 'o', long)]
     tsv: Option<PathBuf>,
+    /// Print a Markdown table.
+    #[arg(short, long = "md")]
     markdown: bool,
+    /// Every impl and case.
+    #[arg(short, long)]
     exhaustive: bool,
-    // The threads of the `-mt` impls; when given, they are added to the default impls.
-    mt: Option<usize>,
+    /// Add the multi-threaded impls with this many threads.
+    #[arg(short, long, value_parser = positive())]
+    threads: Option<usize>,
+    /// Also print the MiB/s of zefiro.
+    #[arg(short, long)]
     speed: bool,
 }
 
@@ -140,57 +156,6 @@ impl Row {
     #[allow(clippy::cast_precision_loss)]
     pub fn mib_per_s(&self) -> f64 {
         self.content_bytes as f64 / MIB / self.best.as_secs_f64()
-    }
-}
-
-impl Args {
-    fn parse() -> Self {
-        let mut args = Self {
-            rounds: DEFAULT_ROUNDS,
-            cases: Vec::new(),
-            impls: Vec::new(),
-            files: Vec::new(),
-            tsv: None,
-            markdown: false,
-            exhaustive: false,
-            mt: None,
-            speed: false,
-        };
-        let mut argv = std::env::args().skip(1);
-        while let Some(flag) = argv.next() {
-            if flag == "--md" {
-                args.markdown = true;
-                continue;
-            }
-            if flag == "--exhaustive" {
-                args.exhaustive = true;
-                continue;
-            }
-            if flag == "--speed" || flag == "--mibs" {
-                args.speed = true;
-                continue;
-            }
-            let Some(value) = argv.next() else {
-                usage(&format!("{flag} needs a value"));
-            };
-            let list = || value.split(',').map(String::from);
-            match flag.as_str() {
-                "--rounds" => match value.parse() {
-                    Ok(rounds) if rounds > 0 => args.rounds = rounds,
-                    _ => usage("--rounds needs a positive number"),
-                },
-                "--mt" => match value.parse() {
-                    Ok(threads) if threads > 0 => args.mt = Some(threads),
-                    _ => usage("--mt needs a positive number"),
-                },
-                "--case" => args.cases.extend(list()),
-                "--impl" => args.impls.extend(list()),
-                "--file" => args.files.extend(list().map(PathBuf::from)),
-                "--tsv" => args.tsv = Some(value.into()),
-                _ => usage(&format!("unknown argument {flag}")),
-            }
-        }
-        args
     }
 }
 
@@ -834,8 +799,8 @@ impl Impl for MzstdStream {
 /// Runs the benchmark described by the command line; `extra_impls` come after
 /// built-in implementations.
 pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
-    let mut args = Args::parse();
-    let threads = args.mt.unwrap_or(DEFAULT_THREADS);
+    let mut args = <Args as clap::Parser>::parse();
+    let threads = args.threads.unwrap_or(DEFAULT_THREADS);
     let mut impls: Vec<Box<dyn Impl>> = vec![
         Box::new(Ours::new()),
         Box::new(ZstdImpl::new()),
@@ -891,7 +856,8 @@ pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
         impls.retain(|imp| args.impls.iter().any(|n| n == imp.name()));
     } else if !args.exhaustive {
         impls.retain(|imp| {
-            DEFAULT_IMPLS.contains(&imp.name()) || (args.mt.is_some() && imp.name().contains("-mt"))
+            DEFAULT_IMPLS.contains(&imp.name())
+                || (args.threads.is_some() && imp.name().contains("-mt"))
         });
     }
 
@@ -1261,8 +1227,12 @@ fn time_pass(imp: &mut dyn Impl, case: &Case) -> Duration {
     start.elapsed()
 }
 
+fn positive() -> clap::builder::RangedU64ValueParser<usize> {
+    clap::builder::RangedU64ValueParser::new().range(1..)
+}
+
 fn usage(message: &str) -> ! {
-    eprintln!("{message}\n{USAGE}");
+    eprintln!("{message}");
     process::exit(2);
 }
 

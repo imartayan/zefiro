@@ -72,16 +72,16 @@ You can run the detailed benchmark with:
 cargo r -r -p compare --bin bench -- --exhaustive
 ```
 
-`--mt 4` adds the multi-threaded zefiro and rust-zstd with 4 threads.
+`--threads 4` (`-t 4`) adds the multi-threaded zefiro and rust-zstd with 4 threads.
 
 #### ARM (Apple M1, 2026-11-04)
 
 | Mode | zefiro | rust-zstd | ruzstd | zrip | mzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | One-shot | **+4.2%** | **+4.2%** | -74.7% | -29.7% | -12.0% |
-| Stream | **+5.0%** | +1.2% | -72.6% | -60.2% | -16.0% |
-| One-shot, 4 threads | **+82.0%** | +37.8% | - | - | - |
-| Stream, 4 threads | **+52.0%** | +38.4% | - | - | - |
+| Stream | **+5.2%** | +1.2% | -72.6% | -60.4% | -15.9% |
+| One-shot, 4 threads | **+81.8%** | +36.8% | - | - | - |
+| Stream, 4 threads | **+92.7%** | +37.7% | - | - | - |
 
 #### x86 (AMD Zen 3, 2026-10-30)
 

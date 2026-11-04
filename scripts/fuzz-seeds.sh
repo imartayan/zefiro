@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seeds fuzz/corpus/{decompress,stream,round_trip,mutate,dict}: decodecorpus frames (with the
+# Seeds fuzz/corpus/{decompress,stream,round_trip,mutate,dict,parallel}: decodecorpus frames (with the
 # 2 byte capacity prefix of `decompress`, the 5 byte chunk and window prefix of `stream`),
 # golden files, decodecorpus frames with their dictionaries (`dict`, 5 byte prefix: dictionary
 # length, capacity), and text with parameter prefixes for the generated targets.
@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 max=${1:-150}
 count=0
 out=fuzz/corpus
-mkdir -p "$out/decompress" "$out/stream" "$out/round_trip" "$out/mutate" "$out/dict"
+mkdir -p "$out/decompress" "$out/stream" "$out/round_trip" "$out/mutate" "$out/dict" "$out/parallel"
 
 # Writes the capacity prefix (little-endian u16, clamped) then the frame.
 seed() {
@@ -79,6 +79,11 @@ if [ -f "$text" ]; then
     done
   done
 fi
-for target in decompress stream round_trip mutate dict; do
+# `parallel`: the decodecorpus and golden seeds of `decompress` behind a thread count byte.
+count=0
+for seed in "$out"/decompress/dc-* "$out"/decompress/golden-*; do
+  { printf "\\x0$((count++ % 3))"; cat "$seed"; } > "$out/parallel/$(basename "$seed")"
+done
+for target in decompress stream round_trip mutate dict parallel; do
   echo "$target: $(ls "$out/$target" | wc -l) seeds"
 done

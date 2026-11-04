@@ -47,8 +47,8 @@ fn rle_block(count: u8, (ll, of, ml): (u8, u8, u8), fields: &[(u64, u32)]) -> Ve
     .concat()
 }
 
-fn uninit_mut(buf: &mut [u8]) -> &mut [core::mem::MaybeUninit<u8>] {
-    crate::decoder::slice_to_uninit_mut(buf)
+fn uninit_mut(buf: &mut [u8]) -> Output {
+    Output::new(crate::decoder::slice_to_uninit_mut(buf))
 }
 
 fn run(
@@ -213,6 +213,68 @@ fn offset_codes_and_extra_bits() {
     let (block, data, expected) = offset_codes_block();
     let out = run(&mut SequencesState::new(), &block, &data, b"", 200).unwrap();
     assert_eq!(out, expected);
+}
+
+// Output (or error) and repeat offsets of the block through stage 2 then stage 3.
+fn run_split(
+    block: &[u8],
+    literals: &[u8],
+    history: &[u8],
+    capacity: usize,
+) -> Result<(Vec<u8>, [u32; 3]), Error> {
+    let mut state = SequencesState::new();
+    let (padded, len) = self::literals(literals);
+    let literals = Literals {
+        padded: &padded,
+        len,
+        in_input: false,
+    };
+    let (nb_seq, stream) = state.read_header(block)?;
+    let mut out = [history, &vec![0; capacity]].concat();
+    let place = Placement {
+        range: history.len()..history.len() + capacity,
+        ext: Ext::Ring(0),
+        total_history: 0,
+    };
+    let cold = state.begin_block(nb_seq);
+    let mut decoded = DecodedSequences::default();
+    decoded.decode(state.block_tables(), stream, nb_seq)?;
+    let mut repeat_offsets = state.repeat_offsets;
+    let end = execute_decoded(
+        &decoded,
+        Some(state.block_tables()),
+        cold,
+        &mut repeat_offsets,
+        &literals,
+        uninit_mut(&mut out),
+        &place,
+    )?;
+    Ok((out[history.len()..end].to_vec(), repeat_offsets))
+}
+
+#[test]
+fn split_execution_agrees_with_the_fused_loop() {
+    let history = b"0123456789abcdef";
+    let data = b"xyzxyzxyz";
+    // Offset code 31 and its 31 extra bits near the top (offsets of 2^32 - 4 and up must not
+    // pass for repeat offsets), then repeat codes: 0 (3 times, with and without literals), and
+    // offset codes 1 (1 extra bit: 1 to 3 as the extra bit and the literal length say).
+    let mut blocks = Vec::new();
+    for extra in [0x7fff_ffff, 0x7fff_fffe, 0x7fff_fffd, 0x7fff_fffc, 0] {
+        blocks.push(rle_block(1, (0, 31, 0), &[(extra, 31)]));
+    }
+    for ll in [0, 1] {
+        for (code, extra) in [(0u8, 0u8), (1, 0), (1, 1)] {
+            let fields = [(u64::from(extra), u32::from(code)); 6];
+            blocks.push(rle_block(6, (ll, code, 0), &fields));
+        }
+    }
+    for block in blocks {
+        let mut state = SequencesState::new();
+        let fused =
+            run(&mut state, &block, data, history, 100).map(|out| (out, state.repeat_offsets));
+        assert_eq!(run_split(&block, data, history, 100), fused, "{block:?}");
+    }
 }
 
 #[test]
@@ -467,11 +529,10 @@ fn run_loop<const PREFETCH: bool>(
         ext: Ext::Ring(0),
         total_history: 0,
     };
-    let tables = &*state.tables;
-    let (op, _, repeat_offsets) = state.run_sequences::<Portable, PREFETCH, false>(
-        tables,
+    let decoder = || SequenceDecoder::new(stream, &state.tables, state.repeat_offsets);
+    let (op, _, repeat_offsets) = run_sequences::<_, Portable, PREFETCH, false>(
+        decoder,
         nb_seq,
-        stream,
         &literals,
         uninit_mut(&mut out),
         &place,

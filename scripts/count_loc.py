@@ -22,7 +22,7 @@ REPOS = [
         "src_paths": ["src"],
         "safe": "Some `unsafe` (checked with Miri)",
         "fuzzed": "✅",
-        "parallel": "❌",
+        "parallel": "✅",
     },
     {
         "name": "rust-zstd",
@@ -46,10 +46,10 @@ REPOS = [
     },
     {
         "name": "zrip",
-        "version": "0.8.13",
+        "version": "0.8.16",
         "url": "https://github.com/paddor/zrip",
-        "crate_name": "zrip-0.8.13",
-        "extra_crates": ["zrip-core-0.11.1", "zrip-decode-0.8.11", "zrip-encode-0.9.2"],
+        "crate_name": "zrip-0.8.16",
+        "extra_crates": ["zrip-core-0.11.1", "zrip-decode-0.8.13", "zrip-encode-0.9.4"],
         "src_paths": [
             "src",
             "crates/core/src",
@@ -65,9 +65,9 @@ REPOS = [
     },
     {
         "name": "mzstd",
-        "version": "0.2.8",
+        "version": "0.2.11",
         "url": "https://github.com/M-Compressors/mzstd",
-        "crate_name": "mzstd-0.2.8",
+        "crate_name": "mzstd-0.2.11",
         "src_paths": ["src"],
         "safe": "✅",
         "fuzzed": "✅",
@@ -94,6 +94,15 @@ def get_repo_dir(repo: dict) -> list[Path]:
     if "local_path" in repo and repo["local_path"].exists():
         return [repo["local_path"].parent]
 
+    # The published crate of the stated version first; a clone of the default branch may differ.
+    crate_name = repo.get("crate_name")
+    if crate_name:
+        all_found = find_cargo_cache(crate_name)
+        for ec in repo.get("extra_crates", []):
+            all_found.extend(find_cargo_cache(ec))
+        if all_found:
+            return all_found
+
     repo_dir = CACHE_DIR / repo["name"]
     if not repo_dir.exists():
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -108,19 +117,7 @@ def get_repo_dir(repo: dict) -> list[Path]:
         except Exception:
             pass
 
-    if repo_dir.exists():
-        return [repo_dir]
-
-    # Fallback to cargo cache if clone failed or in sandbox
-    crate_name = repo.get("crate_name")
-    if crate_name:
-        all_found = find_cargo_cache(f"{crate_name}*")
-        for ec in repo.get("extra_crates", []):
-            all_found.extend(find_cargo_cache(f"{ec}*"))
-        if all_found:
-            return all_found
-
-    return []
+    return [repo_dir] if repo_dir.exists() else []
 
 
 def count_loc(repo: dict) -> int:

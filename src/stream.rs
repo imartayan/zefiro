@@ -5,16 +5,16 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hasher;
-use core::mem;
+use core::{mem, ptr};
 
 use crate::copy::WILDCOPY_OVERLENGTH;
-use crate::decoder::{Decoder, History, decompress_compressed_block};
+use crate::decoder::{BlockDecoder, Decoder, History, SerialBlocks};
 use crate::error::Error;
 use crate::frame::{
     BLOCK_HEADER_SIZE, BlockType, FrameHeader, FrameStart, find_frame_size, parse_block_header,
     parse_frame_start, read_le32,
 };
-use crate::sequences::Ext;
+use crate::sequences::{Ext, Output};
 
 const FRAME_HEADER_SIZE_MAX: usize = 18;
 const CHECKSUM_SIZE: usize = 4;
@@ -130,6 +130,17 @@ impl Stream {
         self.phase = Phase::Init;
     }
 
+    // Between frames: the next call starts with a frame header.
+    #[cfg(feature = "std")]
+    pub(crate) const fn at_frame_start(&self) -> bool {
+        matches!(self.phase, Phase::Init)
+    }
+
+    #[cfg(feature = "std")]
+    pub(crate) const fn block_size_max(&self) -> usize {
+        self.block_size_max
+    }
+
     // The window check and buffer sizing of `zdss_loadHeader` (a skippable frame has no
     // window and no blocks).
     fn begin_frame(&mut self, header: &FrameHeader, has_dictionary: bool) -> Result<(), Error> {
@@ -158,6 +169,15 @@ impl Stream {
         self.stage = Stage::SkipFrame;
         self.expected = content_size as usize;
         Ok(())
+    }
+
+    // The ring as raw memory: a pipeline may hash decoded blocks while later ones are written,
+    // so a `&mut` must not cover the whole ring.
+    const fn output(&mut self) -> Output {
+        Output {
+            base: self.ring.as_mut_ptr(),
+            len: self.ring_len,
+        }
     }
 
     // `ZSTD_decodingBufferSize_internal` and the (re)allocation rule.
@@ -218,7 +238,17 @@ impl Decoder {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<Progress, Error> {
-        let result = self.stream_calls(input, output);
+        self.decompress_stream_with(input, output, &mut SerialBlocks)
+    }
+
+    // `decompress_stream` with `blocks` decoding the compressed blocks.
+    pub(crate) fn decompress_stream_with<B: BlockDecoder>(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+        blocks: &mut B,
+    ) -> Result<Progress, Error> {
+        let result = self.stream_calls(input, output, blocks);
         if result.is_err() {
             self.stream.reset();
         }
@@ -237,7 +267,12 @@ impl Decoder {
         self.stream.max_window_size = 1 << log;
     }
 
-    fn stream_calls(&mut self, input: &[u8], output: &mut [u8]) -> Result<Progress, Error> {
+    fn stream_calls<B: BlockDecoder>(
+        &mut self,
+        input: &[u8],
+        output: &mut [u8],
+        blocks: &mut B,
+    ) -> Result<Progress, Error> {
         let (mut ip, mut op) = (0, 0);
         loop {
             match self.stream.phase {
@@ -308,7 +343,7 @@ impl Decoder {
                         break;
                     }
                     if available >= needed {
-                        self.decompress_continue_stream(&input[ip..ip + needed])?;
+                        self.decompress_continue_stream(&input[ip..ip + needed], blocks)?;
                         ip += needed;
                     } else if available == 0 {
                         break;
@@ -333,7 +368,7 @@ impl Decoder {
                     let block = mem::take(&mut stream.block);
                     stream.block_loaded = 0;
                     let size = if skipping { 0 } else { stream.expected };
-                    let result = self.decompress_continue_stream(&block[..size]);
+                    let result = self.decompress_continue_stream(&block[..size], blocks);
                     self.stream.block = block;
                     result?;
                 }
@@ -353,6 +388,8 @@ impl Decoder {
                     let ring_is_small =
                         (stream.ring_len as u64) < stream.content_size.unwrap_or(u64::MAX);
                     if ring_is_small && stream.out_start + stream.block_size_max > stream.ring_len {
+                        // What was decoded must be hashed before it is overwritten.
+                        blocks.finish_checksum(&mut self.checksum);
                         (stream.out_start, stream.out_end) = (0, 0);
                     }
                 }
@@ -392,14 +429,18 @@ impl Decoder {
     }
 
     // `ZSTD_decompressContinueStream` for the buffered mode.
-    fn decompress_continue_stream(&mut self, src: &[u8]) -> Result<(), Error> {
+    fn decompress_continue_stream<B: BlockDecoder>(
+        &mut self,
+        src: &[u8],
+        blocks: &mut B,
+    ) -> Result<(), Error> {
         let skipping = self.stream.stage == Stage::SkipFrame;
         let capacity = if skipping {
             0
         } else {
             self.stream.ring_len - self.stream.out_start
         };
-        let decoded = self.decompress_continue(src, capacity)?;
+        let decoded = self.decompress_continue(src, capacity, blocks)?;
         let stream = &mut self.stream;
         if decoded == 0 && !skipping {
             stream.phase = Phase::Read;
@@ -412,7 +453,12 @@ impl Decoder {
 
     // `ZSTD_decompressContinue`: consumes exactly the `expected` bytes of `src` and
     // decodes into the ring from `out_start`, where `capacity` bytes are left.
-    fn decompress_continue(&mut self, src: &[u8], capacity: usize) -> Result<usize, Error> {
+    fn decompress_continue<B: BlockDecoder>(
+        &mut self,
+        src: &[u8],
+        capacity: usize,
+        blocks: &mut B,
+    ) -> Result<usize, Error> {
         let Self {
             literals,
             sequences,
@@ -420,6 +466,7 @@ impl Decoder {
             stream,
             dictionary,
             verify_checksum,
+            ..
         } = self;
         // `ZSTD_checkContinuity`: after a restart the previous segment becomes history.
         if capacity > 0 && stream.out_start != stream.segment_end {
@@ -459,34 +506,46 @@ impl Decoder {
                             Some(dictionary) if stream.ext_dict => Ext::Dict(dictionary.padded()),
                             _ => Ext::Ring(stream.ext_len),
                         };
-                        decompress_compressed_block(
+                        blocks.decode_block(
                             literals,
                             sequences,
                             src,
-                            crate::decoder::slice_to_uninit_mut(
-                                &mut stream.ring[..stream.ring_len],
-                            ),
+                            stream.output(),
                             start,
-                            stream.block_size_max,
                             History {
                                 ext,
                                 streaming: true,
+                                block_size_max: stream.block_size_max,
                             },
                         )?
                     }
                     BlockType::Raw => {
-                        let target = stream.ring[start..start + capacity]
-                            .get_mut(..src.len())
-                            .ok_or(Error::DstSizeTooSmall)?;
-                        target.copy_from_slice(src);
+                        if src.len() > capacity {
+                            return Err(Error::DstSizeTooSmall);
+                        }
+                        // SAFETY: `start + capacity` is the end of the ring.
+                        unsafe {
+                            ptr::copy_nonoverlapping(
+                                src.as_ptr(),
+                                stream.ring.as_mut_ptr().add(start),
+                                src.len(),
+                            );
+                        }
                         stream.expected -= src.len();
                         src.len()
                     }
                     BlockType::Rle => {
-                        let target = stream.ring[start..start + capacity]
-                            .get_mut(..stream.rle_size)
-                            .ok_or(Error::DstSizeTooSmall)?;
-                        target.fill(src[0]);
+                        if stream.rle_size > capacity {
+                            return Err(Error::DstSizeTooSmall);
+                        }
+                        // SAFETY: as above.
+                        unsafe {
+                            ptr::write_bytes(
+                                stream.ring.as_mut_ptr().add(start),
+                                src[0],
+                                stream.rle_size,
+                            );
+                        }
                         stream.expected = 0;
                         stream.rle_size
                     }
@@ -496,7 +555,7 @@ impl Decoder {
                 }
                 stream.decoded_size += decoded as u64;
                 if stream.checksum && *verify_checksum {
-                    checksum.write(&stream.ring[start..start + decoded]);
+                    blocks.hash_block(checksum, stream.output(), start, decoded);
                 }
                 stream.segment_end = start + decoded;
                 if stream.expected > 0 {
@@ -516,11 +575,11 @@ impl Decoder {
                 Ok(decoded)
             }
             Stage::Checksum => {
-                if stream.checksum
-                    && *verify_checksum
-                    && read_le32(src, 0) != checksum.finish() as u32
-                {
-                    return Err(Error::ChecksumWrong);
+                if stream.checksum && *verify_checksum {
+                    blocks.finish_checksum(checksum);
+                    if read_le32(src, 0) != checksum.finish() as u32 {
+                        return Err(Error::ChecksumWrong);
+                    }
                 }
                 (stream.stage, stream.expected) = (Stage::End, 0);
                 Ok(0)

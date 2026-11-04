@@ -2,6 +2,8 @@
 #![cfg_attr(feature = "std", doc = include_str!("../README.md"))]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::redundant_pub_crate)]
+// The staged decoding code is for the threaded pipeline, which needs std.
+#![cfg_attr(not(feature = "std"), allow(dead_code))]
 
 extern crate alloc;
 #[cfg(any(feature = "std", test))]
@@ -18,6 +20,8 @@ mod frame;
 mod fse;
 mod huf;
 mod literals;
+#[cfg(feature = "std")]
+mod parallel;
 #[cfg(feature = "std")]
 mod reader;
 mod sequences;

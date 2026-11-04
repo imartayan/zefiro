@@ -2,9 +2,10 @@
 //! saved inputs through the same functions.
 
 use std::cell::RefCell;
+use std::io::{self, BufRead, BufReader, Read};
 use std::sync::Once;
 
-use zefiro::Decoder;
+use zefiro::{Decoder, Reader};
 
 use crate::{
     Code, Libzstd, LiteralMode, Outcome, Params, assert_agree, check_oracle_build,
@@ -45,6 +46,74 @@ pub fn decompress(data: &[u8]) {
         usize::from(u16::from_le_bytes(*capacity)),
         "decompress",
     );
+}
+
+/// 1 byte (2 to 4 threads, and the size of the input chunks), then as `decompress`.
+///
+/// With threads, the verdict and the output are still libzstd's (the gate is 0 under
+/// `cfg(fuzzing)`: every frame takes the pipeline), and a `Reader` with threads gives the
+/// reads and the error of one without, for reads and chunks of the input of other sizes (from
+/// the capacity).
+pub fn parallel(data: &[u8]) {
+    check_build_once();
+    let Some((&threads, data)) = data.split_first() else {
+        return;
+    };
+    let Some((capacity, input)) = data.split_first_chunk::<2>() else {
+        return;
+    };
+    let capacity = usize::from(u16::from_le_bytes(*capacity));
+    let theirs = compare_one_shot(input, capacity, "parallel, serial");
+    let mut decoder = Decoder::new();
+    decoder.set_threads(2 + usize::from(threads % 3));
+    let ours = decompress_ours(&mut decoder, input, capacity);
+    assert_agree(&ours, &theirs, "parallel");
+    let chunk = [0, 5, 97, 1000, 4096][usize::from(threads / 3) % 5];
+    reader_agrees(
+        input,
+        2 + usize::from(threads % 3),
+        1 + capacity % 5000,
+        chunk,
+    );
+}
+
+/// A `Reader` with `threads` and one without, over `input` in chunks of `chunk` bytes (0: one
+/// chunk), read `read_size` bytes at a time: every read returns the same, to the end or the
+/// first error.
+fn reader_agrees(input: &[u8], threads: usize, read_size: usize, chunk: usize) {
+    let reader = |threads| {
+        let mut decoder = Decoder::new();
+        // Windows are small, so that the ring wraps and the frames allocate little.
+        decoder.set_window_log_max(20);
+        decoder.set_threads(threads);
+        let source: Box<dyn BufRead + '_> = if chunk == 0 {
+            Box::new(input)
+        } else {
+            Box::new(BufReader::with_capacity(chunk, input))
+        };
+        Reader::with_decoder(decoder, source)
+    };
+    let (mut serial, mut threaded) = (reader(1), reader(threads));
+    let (mut serial_buf, mut threaded_buf) = (vec![0; read_size], vec![0; read_size]);
+    // Frames of RLE blocks are gigabytes of output: stop after a few megabytes.
+    let mut budget = 1usize << 22;
+    while budget > 0 {
+        let verdict = |result: io::Result<usize>| {
+            result.map_err(|error| (error.kind(), error.get_ref().map(ToString::to_string)))
+        };
+        let serial_read = serial.read(&mut serial_buf);
+        let serial_read = verdict(serial_read);
+        let threaded_read = verdict(threaded.read(&mut threaded_buf));
+        assert_eq!(threaded_read, serial_read, "reader, {threads} threads");
+        let Ok(read @ 1..) = serial_read else {
+            return;
+        };
+        assert!(
+            threaded_buf[..read] == serial_buf[..read],
+            "reader, {threads} threads: bytes differ"
+        );
+        budget = budget.saturating_sub(read);
+    }
 }
 
 /// 5 bytes (input and output chunk sizes, window limit), then arbitrary bytes streamed

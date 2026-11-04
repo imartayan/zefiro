@@ -45,7 +45,7 @@ unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)", "cfg(fuzzing)"] }
 unused_qualifications = "warn"
 
 [workspace.lints.clippy]

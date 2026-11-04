@@ -48,3 +48,10 @@ path = "fuzz_targets/dict.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "parallel"
+path = "fuzz_targets/parallel.rs"
+test = false
+doc = false
+bench = false

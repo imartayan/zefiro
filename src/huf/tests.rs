@@ -515,8 +515,14 @@ mod against_libzstd {
         let mut table = HufTable::boxed();
         let result = (|| {
             match kind {
-                Kind::OneX1 => return table.read_and_decompress_1x(&mut dst, src),
-                Kind::Four => return table.read_and_decompress_4x(&mut dst, src),
+                Kind::OneX1 => {
+                    let tree_size = table.read_table_1x(src)?;
+                    return table.decompress_1x(&mut dst, &src[tree_size..]);
+                }
+                Kind::Four => {
+                    let tree_size = table.read_table_4x(dst.len(), src)?;
+                    return table.decompress_4x(&mut dst, &src[tree_size..]);
+                }
                 _ => {}
             }
             let tree_size = if matches!(kind, Kind::OneX2 | Kind::FourX2) {

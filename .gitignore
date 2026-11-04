@@ -5,6 +5,7 @@ corpus
 fuzz/artifacts
 fuzz/coverage
 fuzz/*.log
+fuzz-*.log
 proptest-regressions
 
 ref

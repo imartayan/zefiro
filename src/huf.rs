@@ -81,6 +81,27 @@ pub(crate) struct HufTable {
     x2: [EltX2; TABLE_SIZE],
 }
 
+// How stage 1 of the split path knows the table of a section: not built, only the description
+// to build it from, or the dictionary's.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum HufDef {
+    #[default]
+    Dictionary,
+    Described(Description),
+}
+
+// A tree description with what `read_table_1x` or `read_table_4x` builds it as.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Description {
+    // At most 128 bytes: a weights header byte of 127, or 64 bytes of raw nibbles.
+    bytes: [u8; 128],
+    len: u8,
+    x2: bool,
+    min_log: u8,
+    // A treeless section with four streams scaled the table (`scale_x1_for_four_streams`).
+    pub(crate) scaled: bool,
+}
+
 impl core::fmt::Debug for HufTable {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HufTable")
@@ -225,17 +246,69 @@ impl HufTable {
         Ok(stats.bytes_read)
     }
 
-    // `HUF_readDTableX1_wksp` then `HUF_decompress1X1_DCtx_wksp`.
-    pub(crate) fn read_and_decompress_1x(
-        &mut self,
-        dst: &mut [u8],
-        src: &[u8],
-    ) -> Result<(), Error> {
+    // `HUF_readDTableX1_wksp` as `HUF_decompress1X1_DCtx_wksp` starts: returns the tree size.
+    pub(crate) fn read_table_1x(&mut self, src: &[u8]) -> Result<usize, Error> {
         let tree_size = self.read_x1_at_least(src, 0)?;
         if tree_size >= src.len() {
             return Err(Error::SrcSizeWrong);
         }
-        self.decompress_1x(dst, &src[tree_size..])
+        Ok(tree_size)
+    }
+
+    // The tree description at the start of `src` (`stream` of a section, `four_streams_len` its
+    // regenerated size if it has four streams) and its size, with the size checks of
+    // `read_table_1x` and `read_table_4x`; the weights are checked when it is built.
+    pub(crate) fn describe(
+        src: &[u8],
+        four_streams_len: Option<usize>,
+    ) -> Result<(HufDef, usize), Error> {
+        let x2 = if let Some(dst_len) = four_streams_len {
+            if dst_len == 0 {
+                return Err(Error::DstSizeTooSmall);
+            }
+            if src.is_empty() {
+                return Err(Error::CorruptionDetected);
+            }
+            select_decoder(dst_len, src.len())
+        } else {
+            false
+        };
+        let first = usize::from(*src.first().ok_or(Error::SrcSizeWrong)?);
+        let size = 1 + if first >= 128 {
+            (first - 127).div_ceil(2)
+        } else {
+            first
+        };
+        if size >= src.len() {
+            return Err(Error::SrcSizeWrong);
+        }
+        let mut description = Description {
+            bytes: [0; 128],
+            len: size as u8,
+            x2,
+            min_log: if four_streams_len.is_some() {
+                FAST_TABLE_LOG as u8
+            } else {
+                0
+            },
+            scaled: false,
+        };
+        description.bytes[..size].copy_from_slice(&src[..size]);
+        Ok((HufDef::Described(description), size))
+    }
+
+    // Builds the table of a description.
+    pub(crate) fn build(&mut self, description: &Description) -> Result<(), Error> {
+        let src = &description.bytes[..usize::from(description.len)];
+        if description.x2 {
+            self.read_x2(src)?;
+        } else {
+            self.read_x1_at_least(src, u32::from(description.min_log))?;
+        }
+        if description.scaled {
+            self.scale_x1_for_four_streams();
+        }
+        Ok(())
     }
 
     // Brings an X1 table built for a single stream to `FAST_TABLE_LOG`, in place from the end.
@@ -251,19 +324,16 @@ impl HufTable {
         self.table_log = FAST_TABLE_LOG;
     }
 
-    // `HUF_decompress4X_hufOnly_wksp`: picks the table kind by `select_decoder`.
-    pub(crate) fn read_and_decompress_4x(
-        &mut self,
-        dst: &mut [u8],
-        src: &[u8],
-    ) -> Result<(), Error> {
-        if dst.is_empty() {
+    // `HUF_decompress4X_hufOnly_wksp` up to the streams: picks the table kind by
+    // `select_decoder` for `dst_len` bytes. Returns the tree size.
+    pub(crate) fn read_table_4x(&mut self, dst_len: usize, src: &[u8]) -> Result<usize, Error> {
+        if dst_len == 0 {
             return Err(Error::DstSizeTooSmall);
         }
         if src.is_empty() {
             return Err(Error::CorruptionDetected);
         }
-        let tree_size = if select_decoder(dst.len(), src.len()) {
+        let tree_size = if select_decoder(dst_len, src.len()) {
             self.read_x2(src)?
         } else {
             self.read_x1(src)?
@@ -271,10 +341,11 @@ impl HufTable {
         if tree_size >= src.len() {
             return Err(Error::SrcSizeWrong);
         }
-        self.decompress_4x(dst, &src[tree_size..])
+        Ok(tree_size)
     }
 
     // `HUF_decompress1X_usingDTable`: `src` is one stream, `dst` its exact output.
+    #[inline(always)]
     pub(crate) fn decompress_1x(&self, dst: &mut [u8], src: &[u8]) -> Result<(), Error> {
         if self.is_x2 {
             decompress_1x::<X2>(self, dst, src)
@@ -284,6 +355,7 @@ impl HufTable {
     }
 
     // `HUF_decompress4X_usingDTable`: `src` is the jump table and four streams.
+    #[inline(always)]
     pub(crate) fn decompress_4x(&self, dst: &mut [u8], src: &[u8]) -> Result<(), Error> {
         if self.is_x2 {
             decompress_4x::<X2>(self, dst, src)

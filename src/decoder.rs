@@ -9,8 +9,8 @@ use crate::frame::{
     FrameStart, decompressed_bound, frame_header_size, is_skippable_magic, parse_block_header,
     parse_frame_start, read_le32, skippable_frame_size,
 };
-use crate::literals::LiteralsState;
-use crate::sequences::{Ext, Placement, SequencesState, block_output_limit};
+use crate::literals::{Literals, LiteralsState};
+use crate::sequences::{Ext, Output, Placement, SequencesState, block_output_limit};
 use crate::stream::Stream;
 
 const CHECKSUM_SIZE: usize = 4;
@@ -24,6 +24,61 @@ pub struct Decoder {
     pub(crate) stream: Stream,
     pub(crate) dictionary: Option<Dictionary>,
     pub(crate) verify_checksum: bool,
+    #[cfg(feature = "std")]
+    pub(crate) threads: usize,
+    // Frames below this many compressed bytes stay serial.
+    #[cfg(test)]
+    pub(crate) gate_bytes: usize,
+    // Frames that went through the pipeline, and that it redid serially.
+    #[cfg(test)]
+    pub(crate) pipelined_frames: usize,
+    #[cfg(test)]
+    pub(crate) redone_frames: usize,
+}
+
+// Decodes the compressed blocks of a frame: the serial code, or the pipelines of `parallel`
+// (the one-shot one starts from the position of the first block header and ignores `block`).
+pub(crate) trait BlockDecoder {
+    fn start_frame(&mut self, _sequences: &SequencesState, _start: usize) {}
+
+    fn decode_block(
+        &mut self,
+        literals: &mut LiteralsState,
+        sequences: &mut SequencesState,
+        block: &[u8],
+        output: Output,
+        start: usize,
+        history: History<'_>,
+    ) -> Result<usize, Error>;
+
+    // Hashes the finished `output[start..start + len]` into `checksum`, in block order. A
+    // pipeline may do it later and elsewhere, and gives the state back in `finish_checksum`.
+    #[inline(always)]
+    fn hash_block(&mut self, checksum: &mut XxHash64, output: Output, start: usize, len: usize) {
+        hash_in_place(checksum, output, start, len);
+    }
+
+    #[inline(always)]
+    fn finish_checksum(&mut self, _checksum: &mut XxHash64) {}
+}
+
+// The serial code. Static dispatch, so that it is what it was before the pipeline.
+#[derive(Default)]
+pub(crate) struct SerialBlocks;
+
+impl BlockDecoder for SerialBlocks {
+    #[inline(always)]
+    fn decode_block(
+        &mut self,
+        literals: &mut LiteralsState,
+        sequences: &mut SequencesState,
+        block: &[u8],
+        output: Output,
+        start: usize,
+        history: History<'_>,
+    ) -> Result<usize, Error> {
+        decompress_compressed_block(literals, sequences, block, output, start, history)
+    }
 }
 
 impl Decoder {
@@ -37,6 +92,14 @@ impl Decoder {
             stream: Stream::new(),
             dictionary: None,
             verify_checksum: true,
+            #[cfg(feature = "std")]
+            threads: 1,
+            #[cfg(test)]
+            gate_bytes: 0,
+            #[cfg(test)]
+            pipelined_frames: 0,
+            #[cfg(test)]
+            redone_frames: 0,
         }
     }
 
@@ -54,6 +117,17 @@ impl Decoder {
     /// from the input, but hash calculation and validation are skipped.
     pub const fn set_verify_checksum(&mut self, verify: bool) {
         self.verify_checksum = verify;
+    }
+
+    /// Sets the threads (this one included) of [`Decoder::decompress_into`] and its variants,
+    /// and of a [`Reader`](crate::Reader) made with this decoder. A frame of at least a few
+    /// blocks is decoded by threads spawned for the call, frames in order; a `Reader` does so
+    /// for frames of unknown or large (256 KiB or more) content size, with threads that last
+    /// as long as it, and reads the input a few blocks per thread ahead of the output. The
+    /// output is the same as with 0 or 1 thread (the default), which is serial.
+    #[cfg(feature = "std")]
+    pub const fn set_threads(&mut self, threads: usize) {
+        self.threads = threads;
     }
 
     /// Decodes every following frame with `dictionary` (`ZSTD_DCtx_loadDictionary`), or
@@ -76,6 +150,20 @@ impl Decoder {
         input: &[u8],
         output: &mut [core::mem::MaybeUninit<u8>],
     ) -> Result<usize, Error> {
+        #[cfg(feature = "std")]
+        if self.threads > 1 {
+            return self.decompress_frames::<true>(input, output);
+        }
+        self.decompress_frames::<false>(input, output)
+    }
+
+    // The frames of `input`; `THREADED`: the big ones go through the pipeline. Two copies, so
+    // that the serial one is the code it was before threads.
+    fn decompress_frames<const THREADED: bool>(
+        &mut self,
+        input: &[u8],
+        output: &mut [core::mem::MaybeUninit<u8>],
+    ) -> Result<usize, Error> {
         let mut input = input;
         let mut written = 0;
         let mut frames_done = false;
@@ -84,7 +172,16 @@ impl Decoder {
                 input = &input[skippable_frame_size(input)?..];
                 continue;
             }
-            match self.decompress_frame(input, &mut output[written..]) {
+            let output = &mut output[written..];
+            #[cfg(feature = "std")]
+            let result = if THREADED {
+                self.decompress_frame_threaded(input, output)
+            } else {
+                self.decompress_frame(input, output, &mut SerialBlocks)
+            };
+            #[cfg(not(feature = "std"))]
+            let result = self.decompress_frame(input, output, &mut SerialBlocks);
+            match result {
                 // Garbage after a good frame is more likely a wrong input size.
                 Err(Error::PrefixUnknown | Error::LegacyFormatUnsupported(_)) if frames_done => {
                     return Err(Error::SrcSizeWrong);
@@ -134,11 +231,13 @@ impl Decoder {
     }
 
     // `ZSTD_decompressFrame`: returns (input consumed, output written).
-    fn decompress_frame(
+    pub(crate) fn decompress_frame<B: BlockDecoder>(
         &mut self,
         input: &[u8],
         output: &mut [core::mem::MaybeUninit<u8>],
+        blocks: &mut B,
     ) -> Result<(usize, usize), Error> {
+        let output = Output::new(output);
         self.begin_frame();
         if input.len() < FRAME_HEADER_MIN_SIZE + BLOCK_HEADER_SIZE {
             return Err(Error::SrcSizeWrong);
@@ -154,11 +253,11 @@ impl Decoder {
             }
         };
         self.check_frame_header(&header)?;
+        blocks.start_frame(&self.sequences, header_size);
 
         let mut input_pos = header_size;
         let mut written = 0;
-        let out_base = output.as_mut_ptr().cast::<u8>();
-        let out_len = output.len();
+        let out_len = output.len;
         loop {
             let block = parse_block_header(&input[input_pos..])?;
             input_pos += BLOCK_HEADER_SIZE;
@@ -170,22 +269,22 @@ impl Decoder {
             let remaining = out_len - written;
             let block_written = match block.block_type {
                 BlockType::Compressed => {
-                    let max = header.block_size_max as usize;
                     let ext = self
                         .dictionary
                         .as_ref()
                         .map_or(Ext::Ring(0), |d| Ext::Dict(d.padded()));
-                    decompress_compressed_block(
+                    let history = History {
+                        ext,
+                        streaming: false,
+                        block_size_max: header.block_size_max as usize,
+                    };
+                    blocks.decode_block(
                         &mut self.literals,
                         &mut self.sequences,
                         block_input,
                         output,
                         written,
-                        max,
-                        History {
-                            ext,
-                            streaming: false,
-                        },
+                        history,
                     )?
                 }
                 BlockType::Raw => {
@@ -196,7 +295,7 @@ impl Decoder {
                     unsafe {
                         core::ptr::copy_nonoverlapping(
                             block_input.as_ptr(),
-                            out_base.add(written),
+                            output.base.add(written),
                             block_input_size,
                         );
                     }
@@ -209,16 +308,13 @@ impl Decoder {
                     }
                     // SAFETY: `size` bytes fit within `remaining`.
                     unsafe {
-                        core::ptr::write_bytes(out_base.add(written), block_input[0], size);
+                        core::ptr::write_bytes(output.base.add(written), block_input[0], size);
                     }
                     size
                 }
             };
             if header.checksum && self.verify_checksum {
-                // SAFETY: `block_written` bytes at out_base.add(written) were just written.
-                let block_slice =
-                    unsafe { core::slice::from_raw_parts(out_base.add(written), block_written) };
-                self.checksum.write(block_slice);
+                blocks.hash_block(&mut self.checksum, output, written, block_written);
             }
             written += block_written;
             input_pos += block_input_size;
@@ -227,6 +323,9 @@ impl Decoder {
             }
         }
 
+        if header.checksum && self.verify_checksum {
+            blocks.finish_checksum(&mut self.checksum);
+        }
         check_frame_end(
             &header,
             written,
@@ -239,12 +338,20 @@ impl Decoder {
     }
 }
 
-// What precedes the block's segment of the output, and whether it goes through the ring
-// of `decompress_stream`.
+// Hashes `output[start..start + len]`, which a block just wrote.
+#[inline(always)]
+pub(crate) fn hash_in_place(checksum: &mut XxHash64, output: Output, start: usize, len: usize) {
+    // SAFETY: the caller's contract.
+    checksum.write(unsafe { core::slice::from_raw_parts(output.base.add(start), len) });
+}
+
+// What precedes the block's segment of the output, whether it goes through the ring of
+// `decompress_stream`, and the frame's block size limit.
 #[derive(Clone, Copy)]
 pub(crate) struct History<'a> {
     pub(crate) ext: Ext<'a>,
     pub(crate) streaming: bool,
+    pub(crate) block_size_max: usize,
 }
 
 // Views a mutable byte slice as uninitialized memory.
@@ -265,28 +372,39 @@ pub(crate) fn decompress_compressed_block(
     literals_state: &mut LiteralsState,
     sequences: &mut SequencesState,
     block: &[u8],
-    output: &mut [core::mem::MaybeUninit<u8>],
+    output: Output,
     start: usize,
-    block_size_max: usize,
     history: History<'_>,
 ) -> Result<usize, Error> {
+    let block_size_max = history.block_size_max;
     if block.len() > block_size_max {
         return Err(Error::SrcSizeWrong);
     }
-    let capacity = output.len() - start;
+    let capacity = output.len - start;
     let (literals, literals_size) = literals_state.decode(block, capacity, block_size_max)?;
     let (nb_seq, stream) = sequences.read_header(&block[literals_size..])?;
     if nb_seq > 0 && capacity == 0 {
         return Err(Error::DstSizeTooSmall);
     }
-    let limit = block_output_limit(capacity, &literals, block_size_max, history.streaming);
-    let place = Placement {
+    let place = block_placement(&literals, start, capacity, history);
+    let block_end = sequences.execute_block(nb_seq, stream, &literals, output, &place)?;
+    Ok(block_end - start)
+}
+
+// Where a block's output goes: `capacity` bytes from `start`, less if libzstd stops earlier.
+pub(crate) fn block_placement<'a>(
+    literals: &Literals<'_>,
+    start: usize,
+    capacity: usize,
+    history: History<'a>,
+) -> Placement<'a> {
+    let block_size_max = history.block_size_max;
+    let limit = block_output_limit(capacity, literals, block_size_max, history.streaming);
+    Placement {
         range: start..start + limit,
         ext: history.ext,
         total_history: start + history.ext.len() + capacity.min(block_size_max),
-    };
-    let block_end = sequences.execute_block(nb_seq, stream, &literals, output, &place)?;
-    Ok(block_end - start)
+    }
 }
 
 impl Decoder {

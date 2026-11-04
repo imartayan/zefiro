@@ -215,20 +215,27 @@ pub struct FrameInfo {
 
 /// Inspects the frame starting at `src` without decompressing it.
 pub fn frame_info(src: &[u8]) -> Result<FrameInfo, Error> {
+    scan_frame(src).map(|(info, _)| info)
+}
+
+// `frame_info` and the number of compressed blocks of the frame.
+pub(crate) fn scan_frame(src: &[u8]) -> Result<(FrameInfo, usize), Error> {
     if is_skippable_magic(src) {
         let compressed_len = skippable_frame_size(src)?;
-        return Ok(FrameInfo {
+        let info = FrameInfo {
             compressed_len,
             content_len: Some(0),
             max_uncompressed_len: 0,
             is_skippable: true,
-        });
+        };
+        return Ok((info, 0));
     }
     let FrameStart::Frame(header) = parse_frame_start(src)? else {
         return Err(Error::SrcSizeWrong);
     };
     let mut pos = header.header_size;
     let mut max_uncompressed_len = 0u64;
+    let mut compressed_blocks = 0;
     loop {
         let block = parse_block_header(&src[pos..])?;
         pos += BLOCK_HEADER_SIZE + block.input_size();
@@ -239,6 +246,7 @@ pub fn frame_info(src: &[u8]) -> Result<FrameInfo, Error> {
             BlockType::Raw | BlockType::Rle => u64::from(block.size),
             BlockType::Compressed => u64::from(header.block_size_max),
         };
+        compressed_blocks += usize::from(block.block_type == BlockType::Compressed);
         max_uncompressed_len = max_uncompressed_len.saturating_add(block_max);
         if block.last {
             break;
@@ -250,14 +258,15 @@ pub fn frame_info(src: &[u8]) -> Result<FrameInfo, Error> {
         }
         pos += 4;
     }
-    Ok(FrameInfo {
+    let info = FrameInfo {
         compressed_len: pos,
         content_len: header.content_size,
         max_uncompressed_len: header
             .content_size
             .map_or(max_uncompressed_len, |size| size.min(max_uncompressed_len)),
         is_skippable: false,
-    })
+    };
+    Ok((info, compressed_blocks))
 }
 
 // `ZSTD_decompressBound`: the sum of the frames' bounds, up to the first frame that does not

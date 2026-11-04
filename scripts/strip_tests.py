@@ -169,7 +169,9 @@ def clean_rust_sources(source_paths: list[Path], target_dir: Path) -> int:
             files = list(p.rglob("*.rs"))
 
         for f in files:
-            if is_test_file(f):
+            # Test files, and every file under a test folder (e.g. `src/parallel/tests/`).
+            parts = [f] if p.is_file() else [p / q for q in f.relative_to(p).parts]
+            if any(is_test_file(q) for q in parts):
                 continue
             content = f.read_text(encoding="utf-8", errors="ignore")
             cleaned = strip_cfg_test(content)

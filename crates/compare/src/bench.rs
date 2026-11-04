@@ -4,14 +4,14 @@
 
 use std::fmt::Write as _;
 use std::hint::black_box;
-use std::io::IsTerminal as _;
+use std::io::{BufReader, IsTerminal as _, Read as _};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{fs, process};
 
-use zefiro::{Decoder, Dictionary};
+use zefiro::{Decoder, Dictionary, Reader};
 
 use crate::corpus::corpus_dir;
 use crate::{Libzstd, Params, Rng, Step, compress, compress_with_dictionary, train_dictionary};
@@ -31,12 +31,15 @@ const LONG_COPIED: usize = 24 << 20;
 const LONG_PIECE: Range<usize> = 256..4096;
 // Pieces of input and output of the streaming impls (`ZSTD_DStreamInSize` and `OutSize`).
 const STREAM_CHUNK: usize = 128 << 10;
+// Output (and input of the impls that need whole blocks) per call of the threaded streaming impls.
+pub const STREAM_MT_CHUNK: usize = 4 << 20;
+const DEFAULT_THREADS: usize = 4;
 const DEFAULT_ROUNDS: usize = 10;
 const MIB: f64 = (1 << 20) as f64;
 // Ratios to zstd within this band are printed without color.
 const RATIO_NOISE: f64 = 0.02;
 const USAGE: &str = "usage: bench [--rounds N] [--case SUBSTRING[,..]] [--impl NAME[,..]] \
-                     [--file PATH.zst[,..]] [--tsv FILE] [--md] [--exhaustive] [--speed] (a colored table on a terminal, TSV otherwise)";
+                     [--file PATH.zst[,..]] [--tsv FILE] [--md] [--exhaustive] [--mt THREADS] [--speed] (a colored table on a terminal, TSV otherwise)";
 
 const DEFAULT_IMPLS: &[&str] = &[
     "zefiro",
@@ -83,6 +86,8 @@ struct Args {
     tsv: Option<PathBuf>,
     markdown: bool,
     exhaustive: bool,
+    // The threads of the `-mt` impls; when given, they are added to the default impls.
+    mt: Option<usize>,
     speed: bool,
 }
 
@@ -94,6 +99,17 @@ struct Ours {
 struct ZstdImpl {
     dctx: Libzstd,
     buffer: Vec<u8>,
+}
+
+/// `Ours` with `set_threads`, one-shot.
+struct OursMt(Ours, &'static str);
+
+/// `Reader` with `set_threads`, over `STREAM_CHUNK` bytes of input at a time.
+struct OursMtStream {
+    threads: usize,
+    dictionary: Option<Dictionary>,
+    buffer: Vec<u8>,
+    name: &'static str,
 }
 
 /// `Ours` and `ZstdImpl` through their streaming calls.
@@ -142,6 +158,7 @@ impl Args {
             tsv: None,
             markdown: false,
             exhaustive: false,
+            mt: None,
             speed: false,
         };
         let mut argv = std::env::args().skip(1);
@@ -166,6 +183,10 @@ impl Args {
                 "--rounds" => match value.parse() {
                     Ok(rounds) if rounds > 0 => args.rounds = rounds,
                     _ => usage("--rounds needs a positive number"),
+                },
+                "--mt" => match value.parse() {
+                    Ok(threads) if threads > 0 => args.mt = Some(threads),
+                    _ => usage("--mt needs a positive number"),
                 },
                 "--case" => args.cases.extend(list()),
                 "--impl" => args.impls.extend(list()),
@@ -204,6 +225,76 @@ impl Impl for Ours {
     fn set_dictionary(&mut self, dictionary: &[u8]) {
         let parsed = Dictionary::new(dictionary).expect("dictionary refused");
         self.decoder.set_dictionary(Some(&parsed));
+    }
+}
+
+/// `"{base}{threads}{suffix}"` as a name that lives for the whole run.
+fn mt_name(base: &str, threads: usize, suffix: &str) -> &'static str {
+    Box::leak(format!("{base}{threads}{suffix}").into_boxed_str())
+}
+
+impl OursMt {
+    fn new(threads: usize) -> Self {
+        let mut ours = Ours::new();
+        ours.decoder.set_threads(threads);
+        Self(ours, mt_name("zefiro-mt", threads, ""))
+    }
+}
+
+impl Impl for OursMt {
+    fn name(&self) -> &'static str {
+        self.1
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        self.0.decompress(input, size)
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.0.set_dictionary(dictionary);
+    }
+}
+
+impl OursMtStream {
+    fn new(threads: usize) -> Self {
+        Self {
+            threads,
+            dictionary: None,
+            buffer: Vec::new(),
+            name: mt_name("zefiro-mt", threads, "-stream"),
+        }
+    }
+}
+
+impl Impl for OursMtStream {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        // One byte of room past the content: the read that returns 0 ends the frame (checksum).
+        grow(&mut self.buffer, size + 1);
+        let mut decoder = Decoder::new();
+        decoder.set_threads(self.threads);
+        decoder.set_dictionary(self.dictionary.as_ref());
+        let mut reader =
+            Reader::with_decoder(decoder, BufReader::with_capacity(STREAM_CHUNK, input));
+        let mut written = 0;
+        loop {
+            let end = (size + 1).min(written + STREAM_MT_CHUNK);
+            match reader
+                .read(&mut self.buffer[written..end])
+                .expect("zefiro failed")
+            {
+                0 => return &self.buffer[..written],
+                read => written += read,
+            }
+        }
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.dictionary = (!dictionary.is_empty())
+            .then(|| Dictionary::new(dictionary).expect("dictionary refused"));
     }
 }
 
@@ -312,9 +403,9 @@ struct RustZstdOneShot {
 }
 
 impl RustZstdOneShot {
-    fn new() -> Self {
+    const fn new(decompressor: rust_zstd::Decompressor) -> Self {
         Self {
-            decompressor: rust_zstd::Decompressor::new(),
+            decompressor,
             buffer: Vec::new(),
         }
     }
@@ -333,22 +424,22 @@ impl Impl for RustZstdOneShot {
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) {
-        let parsed = (!dictionary.is_empty())
-            .then(|| rust_zstd::decode::DecodeDict::new(dictionary).expect("dictionary refused"));
-        self.decompressor.set_dict(parsed.as_ref());
+        rust_zstd_set_dictionary(&mut self.decompressor, dictionary);
     }
 }
 
 struct RustZstdStream {
     decompressor: rust_zstd::Decompressor,
     buffer: Vec<u8>,
+    chunk: usize,
 }
 
 impl RustZstdStream {
-    fn new() -> Self {
+    const fn new(decompressor: rust_zstd::Decompressor, chunk: usize) -> Self {
         Self {
-            decompressor: rust_zstd::Decompressor::new(),
+            decompressor,
             buffer: Vec::new(),
+            chunk,
         }
     }
 }
@@ -362,8 +453,8 @@ impl Impl for RustZstdStream {
         grow(&mut self.buffer, size);
         let (mut consumed, mut written) = (0, 0);
         loop {
-            let input_end = input.len().min(consumed + STREAM_CHUNK);
-            let output_end = size.min(written + STREAM_CHUNK);
+            let input_end = input.len().min(consumed + self.chunk);
+            let output_end = size.min(written + self.chunk);
             let (mut src_pos, mut dst_pos) = (0, 0);
             let hint = self
                 .decompressor
@@ -384,10 +475,57 @@ impl Impl for RustZstdStream {
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) {
-        let parsed = (!dictionary.is_empty())
-            .then(|| rust_zstd::decode::DecodeDict::new(dictionary).expect("dictionary refused"));
-        self.decompressor.set_dict(parsed.as_ref());
+        rust_zstd_set_dictionary(&mut self.decompressor, dictionary);
     }
+}
+
+/// An impl run inside its own rayon pool (rust-zstd's pipeline, gate of 2 blocks and 32 KiB).
+struct RustZstdMt<I> {
+    pool: rayon::ThreadPool,
+    inner: I,
+    name: &'static str,
+}
+
+impl<I: Impl + Send> RustZstdMt<I> {
+    fn new(threads: usize, inner: I, suffix: &str) -> Self {
+        Self {
+            pool: rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("rayon pool"),
+            inner,
+            name: mt_name("rust-zstd-mt", threads, suffix),
+        }
+    }
+}
+
+impl<I: Impl + Send> Impl for RustZstdMt<I> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
+        let inner = &mut self.inner;
+        self.pool.install(|| inner.decompress(input, size))
+    }
+
+    fn set_dictionary(&mut self, dictionary: &[u8]) {
+        self.inner.set_dictionary(dictionary);
+    }
+}
+
+// Serial whatever the input: the default options use the rayon pool of the caller.
+fn rust_zstd_serial() -> rust_zstd::Decompressor {
+    rust_zstd::Decompressor::with_options(&rust_zstd::decode::DecodeOptions {
+        min_parallel_blocks: usize::MAX,
+        ..Default::default()
+    })
+}
+
+fn rust_zstd_set_dictionary(decompressor: &mut rust_zstd::Decompressor, dictionary: &[u8]) {
+    let parsed = (!dictionary.is_empty())
+        .then(|| rust_zstd::decode::DecodeDict::new(dictionary).expect("dictionary refused"));
+    decompressor.set_dict(parsed.as_ref());
 }
 
 struct RuzstdImpl {
@@ -723,19 +861,32 @@ impl Impl for MzstdStream {
 /// built-in implementations.
 pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
     let mut args = Args::parse();
+    let threads = args.mt.unwrap_or(DEFAULT_THREADS);
     let mut impls: Vec<Box<dyn Impl>> = vec![
         Box::new(Ours::new()),
         Box::new(ZstdImpl::new()),
-        Box::new(RustZstdOneShot::new()),
+        Box::new(RustZstdOneShot::new(rust_zstd_serial())),
         Box::new(RuzstdImpl::new()),
         Box::new(ZripImpl::new()),
         Box::new(MzstdImpl::new()),
         Box::new(OursStream(Ours::new())),
         Box::new(ZstdStream(ZstdImpl::new())),
-        Box::new(RustZstdStream::new()),
+        Box::new(RustZstdStream::new(rust_zstd_serial(), STREAM_CHUNK)),
         Box::new(RuzstdStream::new()),
         Box::new(ZripStream::new()),
         Box::new(MzstdStream::new()),
+        Box::new(OursMt::new(threads)),
+        Box::new(OursMtStream::new(threads)),
+        Box::new(RustZstdMt::new(
+            threads,
+            RustZstdOneShot::new(rust_zstd::Decompressor::new()),
+            "",
+        )),
+        Box::new(RustZstdMt::new(
+            threads,
+            RustZstdStream::new(rust_zstd::Decompressor::new(), STREAM_MT_CHUNK),
+            "-stream",
+        )),
     ];
 
     // Deduplicate in case extra_impls provides replacement implementations.
@@ -765,7 +916,9 @@ pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
     if !args.impls.is_empty() {
         impls.retain(|imp| args.impls.iter().any(|n| n == imp.name()));
     } else if !args.exhaustive {
-        impls.retain(|imp| DEFAULT_IMPLS.contains(&imp.name()));
+        impls.retain(|imp| {
+            DEFAULT_IMPLS.contains(&imp.name()) || (args.mt.is_some() && imp.name().contains("-mt"))
+        });
     }
 
     // With `--file` only, the built-in cases are skipped.

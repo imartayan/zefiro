@@ -16,8 +16,8 @@ from strip_tests import clean_rust_sources
 REPOS = [
     {
         "name": "zefiro",
-        "version": "0.1.0",
-        "url": "https://git.martayan.org/igor/rust-zstd-decoder",
+        "version": "1.0.0",
+        "url": "https://github.com/imartayan/zefiro",
         "local_path": Path(__file__).resolve().parent.parent / "src",
         "src_paths": ["src"],
         "safe": "Some `unsafe` (checked with Miri)",

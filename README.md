@@ -1,9 +1,13 @@
 # zefiro
 
+[![crates.io](https://img.shields.io/crates/v/zefiro)](https://crates.io/crates/zefiro)
+[![docs](https://img.shields.io/docsrs/zefiro)](https://docs.rs/zefiro)
+
 A fast and safe zstd decoder in pure Rust.
 
-The main goal of zefiro is to have a fast decoder, on par with or faster than the original C implementation, thoroughly tested and fuzzed against `libzstd`.
-We focus solely on decoding and do not implement encoding.
+The Rust zstd crates I found were either slower than `libzstd`, too large to audit, or not tested against it as thoroughly as I wanted, so I wrote one that is none of these: zefiro matches the C speed in about 5K lines, checked against `libzstd` on every path.
+It can also decompress large frames on several threads, about 1.8x faster than `libzstd` with 4 threads, with the same output as on one.
+It only decodes; for compression, use [zstd](https://crates.io/crates/zstd).
 
 Every decoding path is checked for exact parity with `libzstd`.
 Unsafe blocks are validated with [Miri](https://github.com/rust-lang/miri) to prevent undefined behavior, the multi-threaded pipeline with [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) to prevent data races, streaming consistency is verified with [proptest](https://github.com/proptest-rs/proptest), and differential fuzzing against `libzstd` ensures stability on both valid and corrupted inputs.
@@ -94,8 +98,6 @@ cargo r -r -p compare --bin bench -- --exhaustive
 
 ## Acknowledgements
 
-[libzstd](https://github.com/facebook/zstd) is the reference implementation we test and fuzz against.
+Several optimization tricks come from [rust-zstd](https://github.com/physwkim/rust-zstd).
 
-We reused several optimization tricks from [rust-zstd](https://github.com/physwkim/rust-zstd).
-
-Our testing and fuzzing architecture is modeled after [sirocco](https://github.com/srijs/sirocco), which also inspired the name "zefiro".
+The testing and fuzzing setup is modeled after [sirocco](https://github.com/srijs/sirocco), a gzip decoder which also inspired the name.

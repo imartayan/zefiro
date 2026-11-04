@@ -1,0 +1,67 @@
+name: Tests
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch: {}
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: Configure cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo nextest run --all-features
+      - name: Run tests without std
+        run: cargo nextest run -p zefiro --no-default-features
+      - name: Run doctests
+        run: cargo test --doc --all-features
+      # Fuzz findings, replayed through the fuzz target bodies.
+      - name: Run fuzz regressions
+        env:
+          RUSTFLAGS: --cfg fuzzing
+        run: cargo nextest run -p compare --test regressions
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Configure cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -W clippy::nursery -D warnings
+  no-std:
+    name: Build without std
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
+      - name: Build for an embedded target
+        run: cargo build -p zefiro --no-default-features --target thumbv7em-none-eabihf
+      - name: Build for wasm
+        run: cargo build -p zefiro --no-default-features --target wasm32-unknown-unknown

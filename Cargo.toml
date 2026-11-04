@@ -1,10 +1,17 @@
 [package]
 name = "zefiro"
-version = "0.1.0"
+version = "1.0.0"
 edition.workspace = true
+authors = ["Igor Martayan"]
+description = "A fast zstd decoder in pure Rust, with multi-threaded decompression, tested and fuzzed against libzstd"
+keywords = ["zstd", "zstandard", "decompression", "decoder", "parallel"]
+categories = ["compression", "no-std"]
+repository = "https://github.com/imartayan/zefiro"
+documentation = "https://docs.rs/zefiro"
+readme = "README.md"
 rust-version.workspace = true
 license.workspace = true
-include = ["src/**", "README.md", "LICENSE-*"]
+include = ["src/**", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -42,14 +49,23 @@ default-members = [".", "crates/compare"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.89"
-license = "MIT OR Apache-2.0"
+license = "MIT"
+
+[workspace.metadata.release]
+tag-prefix = ""
+pre-release-replacements = [
+    { file = "CHANGELOG.md", search = '<!-- next-header -->\n## \[Unreleased\]', replace = "<!-- next-header -->\n## [Unreleased]\n\n## {{version}}" },
+]
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)", "cfg(fuzzing)"] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    "cfg(docsrs)",
+    "cfg(fuzzing)",
+] }
 unused_qualifications = "warn"
 
 [workspace.lints.clippy]

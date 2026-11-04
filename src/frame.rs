@@ -64,7 +64,7 @@ impl BlockHeader {
 
 /// Describes the frame at the start of `src` like `ZSTD_getFrameContentSize`.
 /// `Ok(None)` is an unknown size; a skippable frame has size 0.
-pub fn frame_content_size(src: &[u8]) -> Result<Option<u64>, Error> {
+pub(crate) fn frame_content_size(src: &[u8]) -> Result<Option<u64>, Error> {
     match parse_frame_start(src)? {
         FrameStart::Frame(header) => Ok(header.content_size),
         FrameStart::Skippable { .. } => Ok(Some(0)),
@@ -214,6 +214,9 @@ pub struct FrameInfo {
 }
 
 /// Inspects the frame starting at `src` without decompressing it.
+///
+/// The frame header does not store the compressed length, so this walks the block headers
+/// (bodies skipped): `src` must hold the whole frame, else [`Error::SrcSizeWrong`].
 pub fn frame_info(src: &[u8]) -> Result<FrameInfo, Error> {
     scan_frame(src).map(|(info, _)| info)
 }

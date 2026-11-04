@@ -32,12 +32,12 @@ mod testing;
 pub use decoder::Decoder;
 pub use dict::Dictionary;
 pub use error::Error;
-pub use frame::{FrameInfo, frame_content_size, frame_info};
+pub use frame::{FrameInfo, frame_info};
 #[cfg(feature = "std")]
 pub use reader::Reader;
 pub use stream::Progress;
 
-use frame::find_frame_size;
+use frame::{find_frame_size, frame_content_size};
 
 const VEC_LEN_START: usize = 1 << 16;
 

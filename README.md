@@ -15,17 +15,16 @@ Legacy formats (v0.1 to v0.7) and magicless frames are *not* supported.
 
 ### One-shot decompression
 
-Decompress directly into a buffer you own:
+Decompress into a `Vec` you own, sized from the frame headers and reusable across calls:
 
 ```rust ignore
-use zefiro::{Decoder, frame_content_size};
+use zefiro::Decoder;
 
 let compressed: &[u8] = &[/* your .zst data */];
-let size = frame_content_size(compressed)?.unwrap_or(1 << 20);
 
-let mut output = vec![0; size as usize];
+let mut output = Vec::new();
 let mut decoder = Decoder::new();
-let written = decoder.decompress_into(compressed, &mut output)?;
+let written = decoder.decompress_into_vec(compressed, &mut output)?;
 ```
 
 ### Streaming

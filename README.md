@@ -6,7 +6,7 @@ The main goal of zefiro is to have a fast decoder, on par with or faster than th
 We focus solely on decoding and do not implement encoding.
 
 Every decoding path is checked for exact parity with `libzstd`.
-Unsafe blocks are validated with [Miri](https://github.com/rust-lang/miri) to prevent undefined behavior, streaming consistency is verified with [proptest](https://github.com/proptest-rs/proptest), and differential fuzzing against `libzstd` ensures stability on both valid and corrupted inputs.
+Unsafe blocks are validated with [Miri](https://github.com/rust-lang/miri) to prevent undefined behavior, the multi-threaded pipeline with [ThreadSanitizer](https://clang.llvm.org/docs/ThreadSanitizer.html) to prevent data races, streaming consistency is verified with [proptest](https://github.com/proptest-rs/proptest), and differential fuzzing against `libzstd` ensures stability on both valid and corrupted inputs.
 
 Output is byte-identical to `libzstd` 1.5.7 on all valid frames.
 Legacy formats (v0.1 to v0.7) and magicless frames are *not* supported.

@@ -498,12 +498,12 @@ fn reader_and_decompress_on_valid_streams() {
             panic!("{}: {theirs:?}", base.name);
         };
         assert!(
-            decompress(&base.input, output.len()).unwrap() == output,
+            decompress(&base.input, output.len(), 1).unwrap() == output,
             "{}",
             base.name
         );
         if !output.is_empty() {
-            let error = decompress(&base.input, output.len() - 1).unwrap_err();
+            let error = decompress(&base.input, output.len() - 1, 1).unwrap_err();
             assert_eq!(error, Error::DstSizeTooSmall, "{}", base.name);
         }
     }

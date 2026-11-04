@@ -1245,7 +1245,7 @@ pub fn pretty(rows: &[Row], color: bool, speed: bool) -> String {
 fn file_case(path: &Path) -> Case {
     let fail = |e: &dyn std::fmt::Debug| usage(&format!("{}: {e:?}", path.display()));
     let input = fs::read(path).unwrap_or_else(|e| fail(&e));
-    let content = zefiro::decompress(&input, usize::MAX).unwrap_or_else(|e| fail(&e));
+    let content = zefiro::decompress(&input, usize::MAX, 1).unwrap_or_else(|e| fail(&e));
     let name = path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());

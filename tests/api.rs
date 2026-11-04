@@ -62,33 +62,33 @@ fn decompress_with_known_and_unknown_sizes() {
         ]
         .concat();
         let expected = [&a[..], &b[..]].concat();
-        assert_eq!(decompress(&input, expected.len()), Ok(expected.clone()));
-        assert_eq!(decompress(&input, usize::MAX), Ok(expected.clone()));
+        assert_eq!(decompress(&input, expected.len(), 1), Ok(expected.clone()));
+        assert_eq!(decompress(&input, usize::MAX, 1), Ok(expected.clone()));
         assert_eq!(
-            decompress(&input, expected.len() - 1),
+            decompress(&input, expected.len() - 1, 1),
             Err(Error::DstSizeTooSmall)
         );
-        assert_eq!(decompress(&input, 0), Err(Error::DstSizeTooSmall));
+        assert_eq!(decompress(&input, 0, 1), Err(Error::DstSizeTooSmall));
     }
 }
 
 #[test]
 fn decompress_empty_and_broken_inputs() {
-    assert_eq!(decompress(&[], 0), Ok(vec![]));
-    assert_eq!(decompress(&skippable(b""), 0), Ok(vec![]));
+    assert_eq!(decompress(&[], 0, 1), Ok(vec![]));
+    assert_eq!(decompress(&skippable(b""), 0, 1), Ok(vec![]));
     let good = frame(&data(300), 300, false);
     assert_eq!(
-        decompress(&good[..good.len() - 1], 1000),
+        decompress(&good[..good.len() - 1], 1000, 1),
         Err(Error::SrcSizeWrong)
     );
-    assert_eq!(decompress(&good[..9], 1000), Err(Error::SrcSizeWrong));
+    assert_eq!(decompress(&good[..9], 1000, 1), Err(Error::SrcSizeWrong));
     assert_eq!(
-        decompress(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 1000),
+        decompress(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 1000, 1),
         Err(Error::PrefixUnknown)
     );
     let legacy_v07 = [0x27, 0xB5, 0x2F, 0xFD, 0, 0, 0, 0, 0, 0];
     assert_eq!(
-        decompress(&legacy_v07, 1000),
+        decompress(&legacy_v07, 1000, 1),
         Err(Error::LegacyFormatUnsupported(7))
     );
     assert_eq!(
@@ -97,18 +97,18 @@ fn decompress_empty_and_broken_inputs() {
     );
     let sized = frame(&data(300), 300, true);
     assert_eq!(
-        decompress(&sized[..sized.len() - 1], 1000),
+        decompress(&sized[..sized.len() - 1], 1000, 1),
         Err(Error::SrcSizeWrong)
     );
     // A frame stating a size it does not have.
     let mut lying = sized;
     lying[5..9].copy_from_slice(&400u32.to_le_bytes());
-    assert_eq!(decompress(&lying, 1000), Err(Error::CorruptionDetected));
+    assert_eq!(decompress(&lying, 1000, 1), Err(Error::CorruptionDetected));
     // A huge stated size is refused before anything is allocated.
     let mut huge = vec![0x28, 0xB5, 0x2F, 0xFD, 0xE0];
     huge.extend_from_slice(&(1u64 << 40).to_le_bytes());
     huge.extend_from_slice(&block(true, 0, 0, &[]));
-    assert_eq!(decompress(&huge, 1 << 20), Err(Error::DstSizeTooSmall));
+    assert_eq!(decompress(&huge, 1 << 20, 1), Err(Error::DstSizeTooSmall));
 }
 
 #[test]

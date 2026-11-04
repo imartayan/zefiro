@@ -131,7 +131,8 @@ impl Decoder {
 
     /// Sets the threads (this one included) of [`Decoder::decompress_into`] and its variants,
     /// of [`Decoder::decompress_stream`] and of a [`Reader`](crate::Reader) made with this
-    /// decoder. The output is the same as with 0 or 1 thread (the default), which is serial.
+    /// decoder. The output is the same as with 1 thread (the default), which is serial; 0 uses
+    /// [`std::thread::available_parallelism`].
     ///
     /// A frame of at least a few blocks is decoded by threads spawned for the call, frames in
     /// order. A streamed frame of unknown or large (256 KiB or more) content size is decoded by
@@ -140,6 +141,10 @@ impl Decoder {
     /// the threads abandons a stream in progress.
     #[cfg(feature = "std")]
     pub fn set_threads(&mut self, threads: usize) {
+        let threads = match threads {
+            0 => std::thread::available_parallelism().map_or(1, usize::from),
+            _ => threads,
+        };
         if threads != self.threads {
             self.threads = threads;
             self.streaming = None;

@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(feature = "std", doc = include_str!("../README.md"))]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::redundant_pub_crate)]
@@ -48,9 +49,14 @@ const VEC_LEN_START: usize = 1 << 16;
 /// sizes and decoded like `ZSTD_decompress` ([`Decoder::decompress_into`]), so a size
 /// above `max_len` is refused before allocating. Otherwise the frames are decoded like
 /// [`Decoder::decompress_stream`] into a growing `Vec`, and input ending inside a frame is
-/// `SrcSizeWrong`.
-pub fn decompress(input: &[u8], max_len: usize) -> Result<Vec<u8>, Error> {
+/// `SrcSizeWrong`. `threads` is passed to [`Decoder::set_threads`] (1 is serial, 0 uses all
+/// cores); without the `std` feature, decoding is serial.
+pub fn decompress(input: &[u8], max_len: usize, threads: usize) -> Result<Vec<u8>, Error> {
     let mut decoder = Decoder::new();
+    #[cfg(feature = "std")]
+    decoder.set_threads(threads);
+    #[cfg(not(feature = "std"))]
+    let _ = threads;
     if let Some(size) = total_content_size(input) {
         if size > max_len as u64 {
             return Err(Error::DstSizeTooSmall);
@@ -74,7 +80,9 @@ pub fn decompress(input: &[u8], max_len: usize) -> Result<Vec<u8>, Error> {
         if len > max_len {
             return Err(Error::DstSizeTooSmall);
         }
-        if progress.consumed == 0 && progress.written == 0 {
+        // With threads, the call completing a frame may consume and write nothing.
+        let stalled = progress.consumed == 0 && progress.written == 0;
+        if stalled && (frame_done || !progress.frame_done) {
             break;
         }
         frame_done = progress.frame_done;

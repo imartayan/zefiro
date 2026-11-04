@@ -243,11 +243,12 @@ impl Decoder {
     /// With several threads ([`Decoder::set_threads`]) the output and the error are the serial
     /// ones, but the positions are not: a call takes input ahead (what it copied counts as
     /// consumed) and writes what is decoded by then, so output may lag behind the input
-    /// consumed. After the last input, call with an empty `input` until a call writes nothing
-    /// (one that completes a frame may consume and write nothing). Bytes decoded before an
-    /// error come out in calls before the one reporting it. How a damaged frame fails after raw
-    /// blocks may differ from a serial run, as it does between chunkings (raw blocks are taken
-    /// in pieces).
+    /// consumed. The loop is the serial one: call with the input not consumed until all of it is
+    /// and the last call reports `frame_done`, giving more output when it is full. If the input
+    /// ends inside a frame, calls with an empty `input` give the bytes decoded so far, until one
+    /// writes nothing. Bytes decoded before an error come out in calls before the one reporting
+    /// it. How a damaged frame fails after raw blocks may differ from a serial run, as it does
+    /// between chunkings (raw blocks are taken in pieces).
     pub fn decompress_stream(
         &mut self,
         input: &[u8],

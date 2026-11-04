@@ -44,6 +44,8 @@ pub(super) const SHAPES: [Shape; 7] = [
 ];
 // Whole frames in the input, big pieces, for the inputs that are not swept.
 pub(super) const BIG: Shape = shape(Fixed(1 << 20), Fixed(4 << 20));
+// Input and output pieces of the plain serial loop.
+const PLAIN_PIECES: [usize; 4] = [1, 7, 4096, 128 << 10];
 // The frames that fail in the tests have blocks of 1 KiB (window 10), or crafted ones.
 const BLOCK_SIZE_MAX_IN_ERROR_TESTS: usize = 1024;
 // Output pieces of one byte are a call each.
@@ -86,8 +88,9 @@ impl Piece {
     }
 }
 
-// `decoder.decompress_stream` over `input` with the pieces of `shape`, to the end: calls go on
-// with an empty input until one writes nothing.
+// `decoder.decompress_stream` over `input` with the pieces of `shape`, to the end: all the input
+// consumed and a call reports the frame done, or else calls go on with an empty input (the input
+// ends inside a frame) until one writes nothing.
 pub(super) fn drive_stream(mut decoder: Decoder, input: &[u8], shape: Shape) -> Run {
     drive_decoder(&mut decoder, input, shape)
 }
@@ -99,7 +102,7 @@ pub(super) fn drive_decoder(decoder: &mut Decoder, input: &[u8], shape: Shape) -
         error: None,
         at_frame_boundary: true,
     };
-    let (mut position, mut buffer) = (0usize, Vec::new());
+    let (mut position, mut buffer, mut stalled) = (0usize, Vec::new(), 0);
     for _ in 0..100_000_000 {
         let end = position
             .saturating_add(shape.input.next(&mut rng))
@@ -119,13 +122,44 @@ pub(super) fn drive_decoder(decoder: &mut Decoder, input: &[u8], shape: Shape) -
                 if progress.consumed + progress.written > 0 || progress.frame_done {
                     outcome.at_frame_boundary = progress.frame_done;
                 }
-                if end == input.len() && progress.consumed + progress.written == 0 {
+                if position == input.len() && progress.frame_done {
                     break;
                 }
+                let progressed = progress.consumed + progress.written > 0;
+                if end == position && !progressed {
+                    break;
+                }
+                stalled = if progressed { 0 } else { stalled + 1 };
+                assert!(stalled < 100, "no progress");
             }
         }
     }
     run(outcome, decoder.streaming.as_deref())
+}
+
+// The serial loop: pieces of `input_piece` bytes from the first not consumed and room for
+// `output_piece` bytes, until all the input is consumed and the last call reports the frame
+// done. No call has an empty input, and none makes no progress.
+pub(super) fn drive_plain_loop(
+    decoder: &mut Decoder,
+    input: &[u8],
+    (input_piece, output_piece): (usize, usize),
+) -> Result<Vec<u8>, Error> {
+    let (mut position, mut bytes, mut buffer) = (0usize, Vec::new(), vec![0; output_piece]);
+    loop {
+        let end = position.saturating_add(input_piece).min(input.len());
+        assert!(end > position, "a call with an empty input");
+        let progress = decoder.decompress_stream(&input[position..end], &mut buffer)?;
+        position += progress.consumed;
+        bytes.extend_from_slice(&buffer[..progress.written]);
+        assert!(
+            progress.consumed + progress.written > 0 || progress.frame_done,
+            "no progress"
+        );
+        if position == input.len() && progress.frame_done {
+            return Ok(bytes);
+        }
+    }
 }
 
 fn run(outcome: Outcome, streaming: Option<&Streaming>) -> Run {
@@ -281,6 +315,22 @@ pub(super) fn assert_decodes(
                 run.frames
             );
         }
+    }
+    for (index, (input_piece, output_piece)) in PLAIN_PIECES
+        .into_iter()
+        .flat_map(|input| PLAIN_PIECES.map(|output| (input, output)))
+        .enumerate()
+    {
+        if (input_piece == 1 || output_piece == 1 || output_piece == 7) && expected.len() > 50_000 {
+            continue;
+        }
+        let threads = THREADS[(index + frames) % THREADS.len()];
+        let what =
+            format!("{what}, plain loop, {threads} threads, pieces {input_piece}/{output_piece}");
+        let mut decoder = decoder(dictionary, threads, 0);
+        let bytes = drive_plain_loop(&mut decoder, input, (input_piece, output_piece));
+        assert_eq!(bytes.as_ref().err(), None, "{what}");
+        assert_same(&bytes.unwrap(), expected, &what);
     }
     for (index, (read_size, chunk)) in [
         (1 << 16, 0),

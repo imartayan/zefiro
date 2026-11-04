@@ -192,6 +192,9 @@ pub(crate) struct Streaming {
     checksum_next: bool,
     // The item being copied is the last of the frame.
     frame_ends: bool,
+    // The last item of the frame is copied: its last byte is not reported as consumed until the
+    // frame is done, and is not fed to the machine in a call that does not offer it again.
+    closing: bool,
     // The item being copied from the input (`want` bytes in all, more than `bytes` holds), and
     // what it is.
     building: Option<Job<'static>>,
@@ -605,16 +608,29 @@ impl Streaming {
         if self.engaged && decoder.stream.at_frame_start() {
             self.abandon(decoder);
         }
+        // The byte held back by the last call comes first, and is already in its job.
+        let held = self.closing;
+        let skip = usize::from(held && !input.is_empty());
         let (mut taken, mut written) = (0, 0);
-        let result = self.drive(decoder, input, output, &mut taken, &mut written);
-        match result {
+        let result = self.drive(
+            decoder,
+            &input[skip..],
+            output,
+            (held && skip == 0, &mut taken, &mut written),
+        );
+        let mut progress = match result {
             // What was decoded before the error is returned first.
             Err(error) if written > 0 => {
                 self.deferred = Some(error);
-                Ok(Progress::new(taken, written, false))
+                Progress::new(taken, written, false)
             }
-            result => result,
+            result => result?,
+        };
+        progress.consumed += skip;
+        if self.closing && !progress.frame_done {
+            progress.consumed = progress.consumed.saturating_sub(1);
         }
+        Ok(progress)
     }
 
     // The loop of `run`: frames that do not take the pipeline and the end of those that leave
@@ -624,8 +640,7 @@ impl Streaming {
         decoder: &mut Decoder,
         input: &[u8],
         output: &mut [u8],
-        taken: &mut usize,
-        written: &mut usize,
+        (withhold, taken, written): (bool, &mut usize, &mut usize),
     ) -> Result<Progress, Error> {
         let progress = Progress::new;
         loop {
@@ -675,7 +690,8 @@ impl Streaming {
             let direct = self.direct > 0;
             if !direct
                 && self.current.is_none()
-                && !self.next_job(decoder, input.is_empty(), *taken + *written == 0)
+                // A held byte taken in this call is no progress the caller sees.
+                && !self.next_job(decoder, input.is_empty(), *taken + *written == usize::from(self.closing && *taken > 0))
             {
                 if self.engaged {
                     return Ok(progress(*taken, *written, false));
@@ -687,7 +703,15 @@ impl Streaming {
                     &input[*taken..][..self.direct.min(input.len() - *taken)],
                     None,
                 ),
-                Some((job, position)) => (&job.bytes[*position..], Some(job)),
+                Some((job, position)) => {
+                    // The closing item is complete only with its last byte, which the caller
+                    // has not offered again.
+                    let last = withhold && self.pipeline.executed == self.pipeline.planned;
+                    (
+                        &job.bytes[*position..job.bytes.len() - usize::from(last)],
+                        Some(job),
+                    )
+                }
                 None => continue,
             };
             let blocks = &mut StreamBlocks {
@@ -880,6 +904,7 @@ impl Streaming {
             pipeline.free.push(job);
         }
         self.direct = 0;
+        self.closing = false;
         self.engaged = false;
     }
 
@@ -933,10 +958,12 @@ impl Streaming {
                         pipeline.staging = staged;
                     }
                     pipeline.planning = !self.frame_ends;
+                    self.closing = self.frame_ends;
                     pipeline.submit(job, staged);
                 }
                 Item::Checksum => {
                     pipeline.planning = false;
+                    self.closing = true;
                     pipeline.submit(job, false);
                 }
             }

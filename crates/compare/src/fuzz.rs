@@ -101,7 +101,8 @@ fn limited_decoder(threads: usize) -> Decoder {
 }
 
 /// `decompress_stream` over `input` in pieces of `in_piece` bytes (varying from there by
-/// `seed`) with room for `out_piece` bytes, then with an empty input until it writes nothing.
+/// `seed`) with room for `out_piece` bytes, until the input is consumed and the frame done, or
+/// else with an empty input until it writes nothing.
 fn stream_pieces(
     threads: usize,
     input: &[u8],
@@ -114,7 +115,7 @@ fn stream_pieces(
         error: None,
         cut: false,
     };
-    let (mut position, mut state) = (0usize, seed as u64);
+    let (mut position, mut state, mut stalled) = (0usize, seed as u64, 0);
     let mut buffer = vec![0; 2 * out_piece];
     while result.bytes.len() < STREAM_BUDGET {
         state = state
@@ -141,9 +142,16 @@ fn stream_pieces(
                 if progress.consumed + progress.written > 0 || progress.frame_done {
                     result.incomplete = !progress.frame_done;
                 }
-                if end == input.len() && progress.consumed + progress.written == 0 {
+                if position == input.len() && progress.frame_done {
                     return result;
                 }
+                let progressed = progress.consumed + progress.written > 0;
+                // An empty input is the end of the input: nothing more is decoded.
+                if end == position && !progressed {
+                    return result;
+                }
+                stalled = if progressed { 0 } else { stalled + 1 };
+                assert!(stalled < 100, "no progress");
             }
         }
     }

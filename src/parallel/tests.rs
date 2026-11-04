@@ -175,6 +175,58 @@ fn a_small_multi_block_frame_streams_on_threads_in_odd_pieces() {
     stream::assert_matches(&run, &reference, "cut");
 }
 
+// As in serial: once a frame's input is all taken and its output not all written, its last byte is
+// not consumed, nor is any of the next frame's; the call that writes the last byte consumes it.
+#[test]
+fn the_last_byte_of_a_frame_is_held_back_until_its_output_is_written() {
+    let frame = include_bytes!("../../tests/data/threaded-small.zst");
+    let input = [&frame[..], &frame[..]].concat();
+    for (threads, room) in [(2, 100), (4, 1000), (3, 3499), (2, 1)] {
+        let mut decoder = stream::decoder(None, threads, 0);
+        let (mut position, mut written, mut buffer) = (0, 0, vec![0; room]);
+        let mut done = Vec::new();
+        while done.len() < 2 {
+            let progress = decoder
+                .decompress_stream(&input[position..], &mut buffer)
+                .unwrap();
+            position += progress.consumed;
+            written += progress.written;
+            let what = format!("{threads} threads, room {room}, {progress:?}");
+            // Only the call that writes the last byte of a frame consumes the frame's last byte.
+            assert_eq!(progress.frame_done, position % frame.len() == 0, "{what}");
+            if progress.frame_done {
+                done.push(position);
+                assert_eq!(written, 3500 * done.len(), "{what}");
+            }
+        }
+        assert_eq!(done, [frame.len(), input.len()]);
+    }
+}
+
+// Calls with no input do not complete the frame: its last byte has not been given again.
+#[test]
+fn a_call_without_the_held_byte_does_not_complete_the_frame() {
+    let frame = include_bytes!("../../tests/data/threaded-small.zst");
+    let mut decoder = stream::decoder(None, 2, 0);
+    let mut buffer = vec![0; 1000];
+    let first = decoder.decompress_stream(frame, &mut buffer).unwrap();
+    assert!(!first.frame_done && first.consumed < frame.len());
+    let mut written = first.written;
+    loop {
+        let progress = decoder.decompress_stream(&[], &mut buffer).unwrap();
+        assert!(!progress.frame_done && progress.consumed == 0);
+        written += progress.written;
+        if progress.written == 0 {
+            break;
+        }
+    }
+    let last = decoder
+        .decompress_stream(&frame[first.consumed..], &mut buffer)
+        .unwrap();
+    assert!(last.frame_done && last.consumed == frame.len() - first.consumed);
+    assert_eq!(written + last.written, 3500);
+}
+
 // Found by the fuzz target: planning stopped (the rest of the input is read by the serial code)
 // with every planned block executed, and the serial code went on with the tables stage 1 never
 // built.

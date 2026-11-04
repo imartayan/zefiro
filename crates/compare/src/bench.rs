@@ -55,6 +55,10 @@ pub trait Impl {
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8];
     /// Uses `dictionary` (empty: none) for the following frames.
     fn set_dictionary(&mut self, dictionary: &[u8]);
+    /// The time to decompress all the frames of `case`.
+    fn time_pass(&mut self, case: &Case) -> Duration {
+        time_frames(self, case)
+    }
 }
 
 #[derive(Debug)]
@@ -450,6 +454,12 @@ impl<I: Impl + Send> Impl for RustZstdMt<I> {
 
     fn set_dictionary(&mut self, dictionary: &[u8]) {
         self.inner.set_dictionary(dictionary);
+    }
+
+    // One `install` around the pass: per frame, its 5 us hop to the pool would be timed.
+    fn time_pass(&mut self, case: &Case) -> Duration {
+        let inner = &mut self.inner;
+        self.pool.install(|| time_frames(inner, case))
     }
 }
 
@@ -1007,7 +1017,7 @@ pub fn run(cases: &[Case], impls: &mut [Box<dyn Impl>], rounds: usize) -> Vec<Ro
         for round in 0..rounds {
             for k in 0..impls.len() {
                 let i = (k + round) % impls.len();
-                best[i] = best[i].min(time_pass(impls[i].as_mut(), case));
+                best[i] = best[i].min(impls[i].time_pass(case));
             }
         }
         for (imp, best) in impls.iter().zip(best) {
@@ -1222,7 +1232,7 @@ fn file_case(path: &Path) -> Case {
     Case::new(name, Arc::new(content), vec![(input, range)])
 }
 
-fn time_pass(imp: &mut dyn Impl, case: &Case) -> Duration {
+fn time_frames<I: Impl + ?Sized>(imp: &mut I, case: &Case) -> Duration {
     let start = Instant::now();
     for (frame, range) in &case.frames {
         black_box(imp.decompress(black_box(frame), range.len()));

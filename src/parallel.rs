@@ -140,9 +140,7 @@ struct Pipeline<'a> {
     planned: usize,
     executed: usize,
     planning: bool,
-    // The definitions of the current tables, and the dictionary they may refer to.
-    huf: HufDef,
-    tables: TableDefs,
+    // The dictionary the tables may refer to.
     dictionary: Option<Dictionary>,
     // Stage 3 state.
     repeat_offsets: [u32; 3],
@@ -182,11 +180,10 @@ struct OneShot<'a> {
 
 // The state of the `Decoder`'s streaming with threads: the workers, which outlive the frames,
 // and the jobs of the frame in progress.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Streaming {
     pipeline: Pipeline<'static>,
     workers: Vec<JoinHandle<()>>,
-    threads: usize,
     started: bool,
     // The frame in progress goes through the pipeline: its header is consumed.
     engaged: bool,
@@ -216,8 +213,9 @@ pub(crate) struct Streaming {
 }
 
 // What the job being copied from the input holds.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 enum Item {
+    #[default]
     BlockHeader,
     Block(BlockType),
     Checksum,
@@ -238,17 +236,15 @@ impl Job<'_> {
     // Stage 2: literals into the job's buffer (raw ones stay in the block), sequences raw.
     fn decode_streams(&mut self) -> Result<(), Error> {
         let block = &self.bytes[self.body..];
-        let huf = match &self.huf_def {
-            _ if !self.plan.is_compressed() => None,
-            HufDef::Dictionary => {
-                let entropy = self.dictionary.as_ref().and_then(Dictionary::entropy);
-                Some(&*entropy.ok_or(Error::CorruptionDetected)?.huffman)
-            }
-            HufDef::Described(description) => {
-                let table = self.huf.get_or_insert_with(HufTable::boxed);
-                table.build(description)?;
-                Some(&**table)
-            }
+        let huf = if !self.plan.is_compressed() {
+            None
+        } else if self.huf_def.from_dictionary {
+            let entropy = self.dictionary.as_ref().and_then(Dictionary::entropy);
+            Some(&*entropy.ok_or(Error::CorruptionDetected)?.huffman)
+        } else {
+            let table = self.huf.get_or_insert_with(HufTable::boxed);
+            table.build(&self.huf_def)?;
+            Some(&**table)
         };
         self.plan.fill(huf, block, &mut self.literals)?;
         if self.nb_seq == 0 {
@@ -256,7 +252,7 @@ impl Job<'_> {
             return Ok(());
         }
         let tables = self.tables.get_or_insert_with(Tables::boxed);
-        tables.build(&self.table_defs, self.dictionary.as_ref())?;
+        tables.build_all(&self.table_defs, self.dictionary.as_ref())?;
         self.sequences
             .decode(tables, &block[self.stream_start..], self.nb_seq)
     }
@@ -366,18 +362,10 @@ impl<'a> Pipeline<'a> {
         self.planning && self.planned - self.executed < self.window
     }
 
-    fn free_job(&mut self) -> Job<'a> {
-        self.free.pop().unwrap_or_default()
-    }
-
-    fn recycle(&mut self, job: Job<'a>) {
-        self.free.push(job);
-    }
-
     // Stage 1 of a compressed block: its headers and tables, in stream order. Checks that
     // depend on the output room are stage 3's.
     fn read_headers(
-        &mut self,
+        &self,
         job: &mut Job<'a>,
         literals: &mut LiteralsState,
         sequences: &mut SequencesState,
@@ -387,14 +375,13 @@ impl<'a> Pipeline<'a> {
         if block.len() > block_size_max {
             return Err(Error::SrcSizeWrong);
         }
-        job.plan = literals.plan_lazy(block, block_size_max, block_size_max, &mut self.huf)?;
-        job.huf_def = self.huf;
-        let (nb_seq, stream) =
-            sequences.read_header_lazy(&block[job.plan.section_size..], &mut self.tables)?;
+        job.plan = literals.plan::<false>(block, block_size_max, block_size_max)?;
+        job.huf_def = *literals.def();
+        let (nb_seq, stream) = sequences.read_header::<false>(&block[job.plan.section_size..])?;
         job.nb_seq = nb_seq;
         job.stream_start = block.len() - stream.len();
         job.cold = sequences.begin_block(nb_seq);
-        job.table_defs = self.tables;
+        job.table_defs = *sequences.defs();
         job.dictionary.clone_from(&self.dictionary);
         job.flags = (literals.flags(), sequences.flags());
         Ok(())
@@ -555,7 +542,7 @@ impl<'a> OneShot<'a> {
         if block.block_type != BlockType::Compressed {
             return Ok(());
         }
-        let mut job = self.pipeline.free_job();
+        let mut job = self.pipeline.free.pop().unwrap_or_default();
         job.bytes = Cow::Borrowed(body);
         job.body = 0;
         self.pipeline.read_headers(&mut job, literals, sequences)?;
@@ -590,7 +577,7 @@ impl BlockDecoder for OneShot<'_> {
             .filter(|job| job.usable)
             .ok_or(Error::CorruptionDetected)?;
         let result = self.pipeline.execute(&job, output, start, history);
-        self.pipeline.recycle(job);
+        self.pipeline.free.push(job);
         result
     }
 
@@ -604,29 +591,6 @@ impl BlockDecoder for OneShot<'_> {
 }
 
 impl Streaming {
-    pub(crate) fn new(threads: usize) -> Self {
-        Self {
-            pipeline: Pipeline::default(),
-            workers: Vec::new(),
-            threads,
-            started: false,
-            engaged: false,
-            has_checksum: false,
-            checksum_next: false,
-            frame_ends: false,
-            building: None,
-            item: Item::BlockHeader,
-            want: 0,
-            current: None,
-            direct: 0,
-            deferred: None,
-            #[cfg(test)]
-            frames: 0,
-            #[cfg(test)]
-            serial_errors: 0,
-        }
-    }
-
     // `Decoder::decompress_stream` with threads.
     fn run(
         &mut self,
@@ -647,11 +611,7 @@ impl Streaming {
             // What was decoded before the error is returned first.
             Err(error) if written > 0 => {
                 self.deferred = Some(error);
-                Ok(Progress {
-                    consumed: taken,
-                    written,
-                    frame_done: false,
-                })
+                Ok(Progress::new(taken, written, false))
             }
             result => result,
         }
@@ -667,11 +627,7 @@ impl Streaming {
         taken: &mut usize,
         written: &mut usize,
     ) -> Result<Progress, Error> {
-        let progress = |taken, written, frame_done| Progress {
-            consumed: taken,
-            written,
-            frame_done,
-        };
+        let progress = Progress::new;
         loop {
             if !self.engaged {
                 if let Some(used) = self.engage(decoder, &input[*taken..], output.len())? {
@@ -715,33 +671,10 @@ impl Streaming {
                     return Ok(progress(*taken, *written, false));
                 }
             }
-            if self.direct > 0 {
-                let piece = &input[*taken..*taken + self.direct.min(input.len() - *taken)];
-                let blocks = &mut StreamBlocks {
-                    pipeline: &mut self.pipeline,
-                    job: None,
-                };
-                let fed =
-                    match decoder.decompress_stream_with(piece, &mut output[*written..], blocks) {
-                        Ok(fed) => fed,
-                        Err(error) => {
-                            self.abandon(decoder);
-                            return Err(error);
-                        }
-                    };
-                *taken += fed.consumed;
-                *written += fed.written;
-                self.direct -= fed.consumed;
-                if fed.frame_done {
-                    self.abandon(decoder);
-                    return Ok(progress(*taken, *written, true));
-                }
-                if self.direct > 0 || *written == output.len() || fed.consumed + fed.written == 0 {
-                    return Ok(progress(*taken, *written, false));
-                }
-                continue;
-            }
-            if self.current.is_none()
+            // Raw and RLE blocks go from the input to the machine, the others from their job.
+            let direct = self.direct > 0;
+            if !direct
+                && self.current.is_none()
                 && !self.next_job(decoder, input.is_empty(), *taken + *written == 0)
             {
                 if self.engaged {
@@ -749,18 +682,19 @@ impl Streaming {
                 }
                 continue;
             }
-            let Some((job, position)) = self.current.as_mut() else {
-                continue;
+            let (piece, job) = match &self.current {
+                _ if direct => (
+                    &input[*taken..][..self.direct.min(input.len() - *taken)],
+                    None,
+                ),
+                Some((job, position)) => (&job.bytes[*position..], Some(job)),
+                None => continue,
             };
-            let result = decoder.decompress_stream_with(
-                &job.bytes[*position..],
-                &mut output[*written..],
-                &mut StreamBlocks {
-                    pipeline: &mut self.pipeline,
-                    job: Some(job),
-                },
-            );
-            let fed = match result {
+            let blocks = &mut StreamBlocks {
+                pipeline: &mut self.pipeline,
+                job,
+            };
+            let fed = match decoder.decompress_stream_with(piece, &mut output[*written..], blocks) {
                 Ok(fed) => fed,
                 Err(error) => {
                     self.abandon(decoder);
@@ -768,11 +702,16 @@ impl Streaming {
                 }
             };
             *written += fed.written;
-            *position += fed.consumed;
-            if *position == job.bytes.len()
-                && let Some((job, _)) = self.current.take()
-            {
-                self.pipeline.recycle(job);
+            if direct {
+                *taken += fed.consumed;
+                self.direct -= fed.consumed;
+            } else if let Some((job, position)) = self.current.as_mut() {
+                *position += fed.consumed;
+                if *position == job.bytes.len()
+                    && let Some((job, _)) = self.current.take()
+                {
+                    self.pipeline.free.push(job);
+                }
             }
             if fed.frame_done {
                 self.abandon(decoder);
@@ -780,8 +719,12 @@ impl Streaming {
             }
             // With all the input taken, the caller gets to offer more before the jobs in flight
             // are executed: the threads keep their blocks.
-            let input_taken = !input.is_empty() && *taken == input.len() && *written > 0;
-            if *written == output.len() || fed.consumed + fed.written == 0 || input_taken {
+            let input_taken = !direct && !input.is_empty() && *taken == input.len() && *written > 0;
+            if self.direct > 0
+                || *written == output.len()
+                || fed.consumed + fed.written == 0
+                || input_taken
+            {
                 return Ok(progress(*taken, *written, false));
             }
         }
@@ -874,7 +817,7 @@ impl Streaming {
                 .content_size
                 .is_some_and(|size| capacity as u64 >= size)
             && find_frame_size(input).is_ok();
-        if one_pass || !self.start_workers() {
+        if one_pass || !self.start_workers(decoder.threads) {
             return Ok(None);
         }
         let used = header.header_size - held;
@@ -884,8 +827,6 @@ impl Streaming {
         pipeline.planning = true;
         pipeline.serial = false;
         pipeline.staging = true;
-        pipeline.huf = HufDef::default();
-        pipeline.tables = TableDefs::default();
         pipeline.dictionary = decoder.sequences.dictionary().cloned();
         pipeline.repeat_offsets = decoder.sequences.repeat_offsets();
         pipeline.block_size_max = decoder.stream.block_size_max();
@@ -908,10 +849,10 @@ impl Streaming {
     }
 
     // Spawns the workers on first use; false if none could be.
-    fn start_workers(&mut self) -> bool {
+    fn start_workers(&mut self, threads: usize) -> bool {
         if !self.started {
             self.started = true;
-            for _ in 1..self.threads {
+            for _ in 1..threads {
                 let shared = Arc::clone(&self.pipeline.shared);
                 match thread::Builder::new().spawn(move || shared.work()) {
                     Ok(worker) => self.workers.push(worker),
@@ -933,10 +874,10 @@ impl Streaming {
         pipeline.finish_checksum(&mut decoder.checksum);
         pipeline.discard_jobs();
         if let Some((job, _)) = self.current.take() {
-            pipeline.recycle(job);
+            pipeline.free.push(job);
         }
         if let Some(job) = self.building.take() {
-            pipeline.recycle(job);
+            pipeline.free.push(job);
         }
         self.direct = 0;
         self.engaged = false;
@@ -956,7 +897,7 @@ impl Streaming {
                 } else {
                     (Item::BlockHeader, BLOCK_HEADER_SIZE)
                 };
-                let mut job = pipeline.free_job();
+                let mut job = pipeline.free.pop().unwrap_or_default();
                 job.bytes.to_mut().clear();
                 job.body = BLOCK_HEADER_SIZE;
                 job
@@ -1007,7 +948,7 @@ impl Streaming {
 impl Clone for Streaming {
     // A decoder cloned has its own threads, started when needed.
     fn clone(&self) -> Self {
-        Self::new(self.threads)
+        Self::default()
     }
 }
 
@@ -1075,10 +1016,7 @@ impl Decoder {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<Progress, Error> {
-        let mut streaming = self
-            .streaming
-            .take()
-            .unwrap_or_else(|| Box::new(Streaming::new(self.threads)));
+        let mut streaming = self.streaming.take().unwrap_or_default();
         let result = streaming.run(self, input, output);
         self.streaming = Some(streaming);
         result

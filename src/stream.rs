@@ -5,10 +5,10 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hasher;
-use core::{mem, ptr};
+use core::mem;
 
 use crate::copy::WILDCOPY_OVERLENGTH;
-use crate::decoder::{BlockDecoder, Decoder, History, SerialBlocks};
+use crate::decoder::{BlockDecoder, Decoder, History, SerialBlocks, write_plain_block};
 use crate::error::Error;
 use crate::frame::{
     BLOCK_HEADER_SIZE, BlockType, FrameHeader, FrameStart, find_frame_size, parse_block_header,
@@ -39,9 +39,20 @@ pub struct Progress {
     pub frame_done: bool,
 }
 
+impl Progress {
+    pub(crate) const fn new(consumed: usize, written: usize, frame_done: bool) -> Self {
+        Self {
+            consumed,
+            written,
+            frame_done,
+        }
+    }
+}
+
 // `ZSTD_DStream`'s `streamStage`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
+    #[default]
     Init,
     LoadHeader,
     Read,
@@ -50,17 +61,18 @@ enum Phase {
 }
 
 // `ZSTD_DCtx`'s `stage`, what the next `expected` input bytes are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Stage {
     BlockHeader,
     Block,
     LastBlock,
     Checksum,
     SkipFrame,
+    #[default]
     End,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Stream {
     phase: Phase,
     stage: Stage,
@@ -97,32 +109,10 @@ pub(crate) struct Stream {
 }
 
 impl Stream {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            phase: Phase::Init,
-            stage: Stage::End,
-            expected: 0,
             max_window_size: 1 << WINDOW_LOG_DEFAULT,
-            header: [0; FRAME_HEADER_SIZE_MAX],
-            header_len: 0,
-            content_size: None,
-            block_size_max: 0,
-            checksum: false,
-            decoded_size: 0,
-            block_type: BlockType::Raw,
-            rle_size: 0,
-            block: Vec::new(),
-            block_loaded: 0,
-            ring: Vec::new(),
-            ring_len: 0,
-            block_buffer_len: 0,
-            oversized_frames: 0,
-            out_start: 0,
-            out_end: 0,
-            segment_end: 0,
-            ext_len: 0,
-            ext_dict: false,
-            hostage: false,
+            ..Self::default()
         }
     }
 
@@ -325,11 +315,7 @@ impl Decoder {
                             if loaded < to_load {
                                 // Early errors: a prefix that cannot become a magic number.
                                 parse_frame_start(&stream.header[..stream.header_len])?;
-                                return Ok(Progress {
-                                    consumed: input.len(),
-                                    written: 0,
-                                    frame_done: false,
-                                });
+                                return Ok(Progress::new(input.len(), 0, false));
                             }
                             continue;
                         }
@@ -344,11 +330,7 @@ impl Decoder {
                         let written = self.decompress_into(&input[..frame_size], output)?;
                         self.stream.expected = 0;
                         self.stream.phase = Phase::Init;
-                        return Ok(Progress {
-                            consumed: frame_size,
-                            written,
-                            frame_done: true,
-                        });
+                        return Ok(Progress::new(frame_size, written, true));
                     }
                     self.begin_frame();
                     match start {
@@ -431,30 +413,18 @@ impl Decoder {
                 if stream.hostage {
                     if ip >= input.len() {
                         stream.phase = Phase::Read;
-                        return Ok(Progress {
-                            consumed: ip,
-                            written: op,
-                            frame_done: false,
-                        });
+                        return Ok(Progress::new(ip, op, false));
                     }
                     ip += 1;
                 }
-                return Ok(Progress {
-                    consumed: ip,
-                    written: op,
-                    frame_done: true,
-                });
+                return Ok(Progress::new(ip, op, true));
             }
             if !stream.hostage {
                 ip -= 1;
                 stream.hostage = true;
             }
         }
-        Ok(Progress {
-            consumed: ip,
-            written: op,
-            frame_done: false,
-        })
+        Ok(Progress::new(ip, op, false))
     }
 
     // `ZSTD_decompressContinueStream` for the buffered mode.
@@ -548,35 +518,16 @@ impl Decoder {
                             },
                         )?
                     }
-                    BlockType::Raw => {
-                        if src.len() > capacity {
-                            return Err(Error::DstSizeTooSmall);
-                        }
-                        // SAFETY: `start + capacity` is the end of the ring.
-                        unsafe {
-                            ptr::copy_nonoverlapping(
-                                src.as_ptr(),
-                                stream.ring.as_mut_ptr().add(start),
-                                src.len(),
-                            );
-                        }
+                    BlockType::Raw | BlockType::Rle => {
+                        let size = write_plain_block(
+                            stream.block_type,
+                            src,
+                            stream.rle_size,
+                            stream.output(),
+                            start,
+                        )?;
                         stream.expected -= src.len();
-                        src.len()
-                    }
-                    BlockType::Rle => {
-                        if stream.rle_size > capacity {
-                            return Err(Error::DstSizeTooSmall);
-                        }
-                        // SAFETY: as above.
-                        unsafe {
-                            ptr::write_bytes(
-                                stream.ring.as_mut_ptr().add(start),
-                                src[0],
-                                stream.rle_size,
-                            );
-                        }
-                        stream.expected = 0;
-                        stream.rle_size
+                        size
                     }
                 };
                 if decoded > stream.block_size_max {

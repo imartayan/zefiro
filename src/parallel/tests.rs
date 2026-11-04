@@ -451,7 +451,7 @@ mod against_libzstd {
                     coverage.treeless_four_streams += usize::from(body[0] >> 2 & 3 != 0);
                 }
                 let rest = &body[literals_size..];
-                let (nb_seq, _) = decoder.sequences.read_header(rest).unwrap();
+                let (nb_seq, _) = decoder.sequences.read_header::<true>(rest).unwrap();
                 decoder.sequences.begin_block(nb_seq);
                 if nb_seq > 0 {
                     let modes =

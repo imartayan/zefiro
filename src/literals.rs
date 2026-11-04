@@ -37,10 +37,12 @@ pub(crate) struct LiteralsState {
     dictionary: Option<Dictionary>,
     // The table to repeat is the dictionary's, not copied into `table`.
     in_dictionary: bool,
+    // What `table` is built from.
+    def: HufDef,
 }
 
-// What a section needs once its header and table are read: stage 2 of the split path
-// writes the literals from it.
+// What a section needs once its header and tree description are read: the literals are written
+// from it (stage 2 of the split path).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LiteralsPlan {
     kind: u8,
@@ -68,6 +70,7 @@ impl LiteralsState {
             has_table: false,
             dictionary: None,
             in_dictionary: false,
+            def: HufDef::default(),
         }
     }
 
@@ -82,6 +85,7 @@ impl LiteralsState {
             .as_ref()
             .is_some_and(|d| d.entropy().is_some());
         self.has_table = self.in_dictionary;
+        self.def.from_dictionary = true;
     }
 
     // Decodes the section at the start of `src`. `output_capacity` is the room
@@ -93,16 +97,17 @@ impl LiteralsState {
         output_capacity: usize,
         block_size_max: usize,
     ) -> Result<(Literals<'a>, usize), Error> {
-        let plan = self.plan(src, block_size_max.min(output_capacity), block_size_max)?;
+        let plan = self.plan::<true>(src, block_size_max.min(output_capacity), block_size_max)?;
         let table = active_table(self.dictionary.as_ref(), self.in_dictionary, &self.table);
         plan.fill(Some(table), src, &mut self.buffer)?;
         Ok((plan.literals(src, &self.buffer), plan.section_size))
     }
 
-    // The section's header and Huffman table (stage 1 of the split path): checks and
-    // table state as `ZSTD_decodeLiteralsBlock`, `writable` bytes of room for the literals.
+    // The section's header and tree description (stage 1 of the split path): checks and table
+    // state as `ZSTD_decodeLiteralsBlock`, `writable` bytes of room for the literals. With
+    // `BUILD` the table is built here, else `def` becomes the description it is built from.
     #[inline(always)]
-    pub(crate) fn plan(
+    pub(crate) fn plan<const BUILD: bool>(
         &mut self,
         src: &[u8],
         writable: usize,
@@ -114,7 +119,13 @@ impl LiteralsState {
         let kind = src[0] & 3;
         let size_format = (src[0] >> 2) & 3;
         if kind == COMPRESSED || kind == 3 {
-            return self.plan_compressed(src, kind == 3, size_format, writable, block_size_max);
+            return self.plan_compressed::<BUILD>(
+                src,
+                kind == 3,
+                size_format,
+                writable,
+                block_size_max,
+            );
         }
 
         // Raw and RLE: 1, 2 or 3 bytes of header, the size in the bits above the 4 first.
@@ -151,7 +162,7 @@ impl LiteralsState {
         })
     }
 
-    fn plan_compressed(
+    fn plan_compressed<const BUILD: bool>(
         &mut self,
         src: &[u8],
         repeat_table: bool,
@@ -165,21 +176,25 @@ impl LiteralsState {
         let (header_size, len, compressed_len) =
             compressed_header(src, size_format, writable, block_size_max)?;
         let single_stream = size_format == 0;
-        let stream = &src[header_size..header_size + compressed_len];
-        let tree_size = if repeat_table {
-            if !single_stream {
+        let mut tree_size = 0;
+        if !repeat_table {
+            self.in_dictionary = false;
+            let stream = &src[header_size..header_size + compressed_len];
+            tree_size = self
+                .def
+                .read(stream, (!single_stream).then_some(len))
+                .map_err(|_| Error::CorruptionDetected)?;
+            if BUILD {
+                self.table
+                    .build(&self.def)
+                    .map_err(|_| Error::CorruptionDetected)?;
+            }
+        } else if !single_stream {
+            self.def.scaled = true;
+            if BUILD {
                 self.table.scale_x1_for_four_streams();
             }
-            0
-        } else {
-            self.in_dictionary = false;
-            let tree_size = if single_stream {
-                self.table.read_table_1x(stream)
-            } else {
-                self.table.read_table_4x(len, stream)
-            };
-            tree_size.map_err(|_| Error::CorruptionDetected)?
-        };
+        }
         self.has_table = true;
         Ok(LiteralsPlan {
             kind: COMPRESSED,
@@ -192,47 +207,8 @@ impl LiteralsState {
         })
     }
 
-    // `plan` for the pipeline's stage 1: the table is not built, `def` becomes the one the
-    // section decodes with. Descriptions that do not build fail in stage 2.
-    pub(crate) fn plan_lazy(
-        &mut self,
-        src: &[u8],
-        writable: usize,
-        block_size_max: usize,
-        def: &mut HufDef,
-    ) -> Result<LiteralsPlan, Error> {
-        let kind = src.first().map_or(RAW, |first| first & 3);
-        if src.len() < MIN_LITERALS_SECTION_SIZE || kind < COMPRESSED {
-            return self.plan(src, writable, block_size_max);
-        }
-        let repeat_table = kind == 3;
-        if repeat_table && !self.has_table {
-            return Err(Error::DictionaryCorrupted);
-        }
-        let size_format = (src[0] >> 2) & 3;
-        let (header_size, len, compressed_len) =
-            compressed_header(src, size_format, writable, block_size_max)?;
-        let single_stream = size_format == 0;
-        let mut tree_size = 0;
-        if !repeat_table {
-            self.in_dictionary = false;
-            let stream = &src[header_size..header_size + compressed_len];
-            let (described, size) = HufTable::describe(stream, (!single_stream).then_some(len))
-                .map_err(|_| Error::CorruptionDetected)?;
-            (*def, tree_size) = (described, size);
-        } else if let (false, HufDef::Described(description)) = (single_stream, &mut *def) {
-            description.scaled = true;
-        }
-        self.has_table = true;
-        Ok(LiteralsPlan {
-            kind: COMPRESSED,
-            header_size,
-            len,
-            section_size: header_size + compressed_len,
-            stream_start: header_size + tree_size,
-            single_stream,
-            ..LiteralsPlan::default()
-        })
+    pub(crate) const fn def(&self) -> &HufDef {
+        &self.def
     }
 
     // What the sections so far left besides the table: a table can be repeated, and it is the
@@ -245,8 +221,9 @@ impl LiteralsState {
     // sections planned further ahead changed it.
     pub(crate) fn restore(&mut self, flags: [bool; 2], def: &HufDef) {
         [self.has_table, self.in_dictionary] = flags;
-        if let (false, HufDef::Described(description)) = (self.in_dictionary, def) {
-            let _ = self.table.build(description);
+        self.def = *def;
+        if !self.in_dictionary && !def.from_dictionary {
+            let _ = self.table.build(def);
         }
     }
 }

@@ -81,18 +81,13 @@ pub(crate) struct HufTable {
     x2: [EltX2; TABLE_SIZE],
 }
 
-// How stage 1 of the split path knows the table of a section: not built, only the description
-// to build it from, or the dictionary's.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) enum HufDef {
-    #[default]
-    Dictionary,
-    Described(Description),
-}
-
-// A tree description with what `read_table_1x` or `read_table_4x` builds it as.
+// The tree description a table is built from, with how it builds: `HUF_readDTableX1_wksp` (for
+// one stream, or four when `HUF_selectDecoder` picks X1) or `HUF_readDTableX2_wksp`. Stage 1 of
+// the split path keeps it instead of the table.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Description {
+pub(crate) struct HufDef {
+    // The table is the dictionary's: no description.
+    pub(crate) from_dictionary: bool,
     // At most 128 bytes: a weights header byte of 127, or 64 bytes of raw nibbles.
     bytes: [u8; 128],
     len: u8,
@@ -164,11 +159,6 @@ impl HufTable {
             x1: [EltX1::default(); TABLE_SIZE],
             x2: [EltX2::default(); TABLE_SIZE],
         })
-    }
-
-    // `HUF_readDTableX1_wksp`: returns the bytes of the tree description.
-    pub(crate) fn read_x1(&mut self, src: &[u8]) -> Result<usize, Error> {
-        self.read_x1_at_least(src, FAST_TABLE_LOG)
     }
 
     // The table is scaled to at least `min_log` bits: the 4-stream fast path needs
@@ -246,66 +236,15 @@ impl HufTable {
         Ok(stats.bytes_read)
     }
 
-    // `HUF_readDTableX1_wksp` as `HUF_decompress1X1_DCtx_wksp` starts: returns the tree size.
-    pub(crate) fn read_table_1x(&mut self, src: &[u8]) -> Result<usize, Error> {
-        let tree_size = self.read_x1_at_least(src, 0)?;
-        if tree_size >= src.len() {
-            return Err(Error::SrcSizeWrong);
-        }
-        Ok(tree_size)
-    }
-
-    // The tree description at the start of `src` (`stream` of a section, `four_streams_len` its
-    // regenerated size if it has four streams) and its size, with the size checks of
-    // `read_table_1x` and `read_table_4x`; the weights are checked when it is built.
-    pub(crate) fn describe(
-        src: &[u8],
-        four_streams_len: Option<usize>,
-    ) -> Result<(HufDef, usize), Error> {
-        let x2 = if let Some(dst_len) = four_streams_len {
-            if dst_len == 0 {
-                return Err(Error::DstSizeTooSmall);
-            }
-            if src.is_empty() {
-                return Err(Error::CorruptionDetected);
-            }
-            select_decoder(dst_len, src.len())
-        } else {
-            false
-        };
-        let first = usize::from(*src.first().ok_or(Error::SrcSizeWrong)?);
-        let size = 1 + if first >= 128 {
-            (first - 127).div_ceil(2)
-        } else {
-            first
-        };
-        if size >= src.len() {
-            return Err(Error::SrcSizeWrong);
-        }
-        let mut description = Description {
-            bytes: [0; 128],
-            len: size as u8,
-            x2,
-            min_log: if four_streams_len.is_some() {
-                FAST_TABLE_LOG as u8
-            } else {
-                0
-            },
-            scaled: false,
-        };
-        description.bytes[..size].copy_from_slice(&src[..size]);
-        Ok((HufDef::Described(description), size))
-    }
-
     // Builds the table of a description.
-    pub(crate) fn build(&mut self, description: &Description) -> Result<(), Error> {
-        let src = &description.bytes[..usize::from(description.len)];
-        if description.x2 {
+    pub(crate) fn build(&mut self, def: &HufDef) -> Result<(), Error> {
+        let src = &def.bytes[..usize::from(def.len)];
+        if def.x2 {
             self.read_x2(src)?;
         } else {
-            self.read_x1_at_least(src, u32::from(description.min_log))?;
+            self.read_x1_at_least(src, u32::from(def.min_log))?;
         }
-        if description.scaled {
+        if def.scaled {
             self.scale_x1_for_four_streams();
         }
         Ok(())
@@ -322,26 +261,6 @@ impl HufTable {
             self.x1[index << scale..(index + 1) << scale].fill(cell);
         }
         self.table_log = FAST_TABLE_LOG;
-    }
-
-    // `HUF_decompress4X_hufOnly_wksp` up to the streams: picks the table kind by
-    // `select_decoder` for `dst_len` bytes. Returns the tree size.
-    pub(crate) fn read_table_4x(&mut self, dst_len: usize, src: &[u8]) -> Result<usize, Error> {
-        if dst_len == 0 {
-            return Err(Error::DstSizeTooSmall);
-        }
-        if src.is_empty() {
-            return Err(Error::CorruptionDetected);
-        }
-        let tree_size = if select_decoder(dst_len, src.len()) {
-            self.read_x2(src)?
-        } else {
-            self.read_x1(src)?
-        };
-        if tree_size >= src.len() {
-            return Err(Error::SrcSizeWrong);
-        }
-        Ok(tree_size)
     }
 
     // `HUF_decompress1X_usingDTable`: `src` is one stream, `dst` its exact output.
@@ -362,6 +281,62 @@ impl HufTable {
         } else {
             decompress_4x::<X1>(self, dst, src)
         }
+    }
+}
+
+impl Default for HufDef {
+    fn default() -> Self {
+        Self {
+            from_dictionary: true,
+            bytes: [0; 128],
+            len: 0,
+            x2: false,
+            min_log: 0,
+            scaled: false,
+        }
+    }
+}
+
+impl HufDef {
+    // Sets the description to the one at the start of `src` (the `stream` of a section,
+    // `four_streams_len` its regenerated size if it has four streams), with the size checks of
+    // `HUF_decompress1X1_DCtx_wksp` and `HUF_decompress4X_hufOnly_wksp`; the weights are checked
+    // when it is built. Returns its size.
+    pub(crate) fn read(
+        &mut self,
+        src: &[u8],
+        four_streams_len: Option<usize>,
+    ) -> Result<usize, Error> {
+        let x2 = if let Some(dst_len) = four_streams_len {
+            if dst_len == 0 {
+                return Err(Error::DstSizeTooSmall);
+            }
+            if src.is_empty() {
+                return Err(Error::CorruptionDetected);
+            }
+            select_decoder(dst_len, src.len())
+        } else {
+            false
+        };
+        let first = usize::from(*src.first().ok_or(Error::SrcSizeWrong)?);
+        let size = 1 + if first >= 128 {
+            (first - 127).div_ceil(2)
+        } else {
+            first
+        };
+        if size >= src.len() {
+            return Err(Error::SrcSizeWrong);
+        }
+        self.bytes[..size].copy_from_slice(&src[..size]);
+        self.len = size as u8;
+        self.x2 = x2;
+        self.min_log = if four_streams_len.is_some() {
+            FAST_TABLE_LOG as u8
+        } else {
+            0
+        };
+        (self.from_dictionary, self.scaled) = (false, false);
+        Ok(size)
     }
 }
 

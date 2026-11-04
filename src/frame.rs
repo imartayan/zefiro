@@ -38,8 +38,9 @@ pub(crate) enum FrameStart {
     NeedMore(usize),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum BlockType {
+    #[default]
     Raw,
     Rle,
     Compressed,

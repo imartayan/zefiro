@@ -8,6 +8,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::mem;
 use core::ops::Range;
 
 use branches::prefetch_read_data;
@@ -59,6 +60,8 @@ pub(crate) struct SequencesState {
     dictionary: Option<Dictionary>,
     // Per table (ll, of, ml): the table is the dictionary's, not copied into `tables`.
     in_dictionary: [bool; 3],
+    // What `tables` are built from.
+    defs: TableDefs,
     // libzstd's `ddictIsCold`: the first block after a dictionary was (re)loaded takes the
     // prefetching loop, and whether its `dictEnd` is still the dictionary's end, which a
     // ring restart changes.
@@ -78,17 +81,21 @@ pub(crate) struct Tables {
 }
 
 // How stage 1 of the split path knows a table: not built, only what it is built from.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) enum TableDef {
-    #[default]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TableDef {
+    kind: TableKind,
+    // `Counts`: the normalized counts of the symbols up to `max_symbol`.
+    norm: [i16; MAX_SYMBOLS],
+    max_symbol: u8,
+    table_log: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TableKind {
     Dictionary,
     Predefined,
     Rle(u8),
-    Described {
-        norm: [i16; MAX_SYMBOLS],
-        max_symbol: u8,
-        table_log: u8,
-    },
+    Counts,
 }
 
 // The definitions of the literal lengths, offsets and match lengths tables.
@@ -183,7 +190,7 @@ pub(crate) struct Output {
 }
 
 impl Output {
-    pub(crate) const fn new(slice: &mut [core::mem::MaybeUninit<u8>]) -> Self {
+    pub(crate) const fn new(slice: &mut [mem::MaybeUninit<u8>]) -> Self {
         Self {
             base: slice.as_mut_ptr().cast(),
             len: slice.len(),
@@ -224,6 +231,17 @@ struct SequenceDecoder<'a> {
     repeat_offsets: [usize; 3],
 }
 
+impl Default for TableDef {
+    fn default() -> Self {
+        Self {
+            kind: TableKind::Dictionary,
+            norm: [0; MAX_SYMBOLS],
+            max_symbol: 0,
+            table_log: 0,
+        }
+    }
+}
+
 impl Tables {
     pub(crate) fn boxed() -> Box<Self> {
         Box::new(Self {
@@ -239,50 +257,68 @@ impl Tables {
     // lengths. Returns them and the bytes used.
     pub(crate) fn read_dictionary(src: &[u8]) -> Result<(Box<Self>, usize), Error> {
         let mut tables = Self::boxed();
-        let mut custom = true;
-        let spec = |max_symbol, max_log| TableSpec {
-            mode: MODE_COMPRESSED,
-            max_symbol,
-            max_log,
-        };
-        let mut used = build_table(
-            &mut tables.of,
-            &mut custom,
-            &OF_DEFAULT_TABLE,
-            spec(OF_MAX_SYMBOL, OF_TABLE_LOG_MAX),
-            (&OF_BASE, &OF_EXTRA_BITS),
-            src,
-            false,
-        )
-        .map_err(|_| Error::DictionaryCorrupted)?;
-        used += build_table(
-            &mut tables.ml,
-            &mut custom,
-            &ML_DEFAULT_TABLE,
-            spec(ML_MAX_SYMBOL, ML_TABLE_LOG_MAX),
-            (&ML_BASE, &ML_EXTRA_BITS),
-            &src[used..],
-            false,
-        )
-        .map_err(|_| Error::DictionaryCorrupted)?;
-        used += build_table(
-            &mut tables.ll,
-            &mut custom,
-            &LL_DEFAULT_TABLE,
-            spec(LL_MAX_SYMBOL, LL_TABLE_LOG_MAX),
-            (&LL_BASE, &LL_EXTRA_BITS),
-            &src[used..],
-            false,
-        )
-        .map_err(|_| Error::DictionaryCorrupted)?;
-        tables.short_offsets = short_offset_share(&tables.of) >= SHORT_OFFSET_SHARE_MIN;
+        let (mut used, mut def) = (0, TableDef::default());
+        for (index, max_symbol, max_log) in [
+            (1, OF_MAX_SYMBOL, OF_TABLE_LOG_MAX),
+            (2, ML_MAX_SYMBOL, ML_TABLE_LOG_MAX),
+            (0, LL_MAX_SYMBOL, LL_TABLE_LOG_MAX),
+        ] {
+            let spec = TableSpec {
+                mode: MODE_COMPRESSED,
+                max_symbol,
+                max_log,
+            };
+            used += describe_table(spec, &src[used..], &mut def)
+                .map_err(|_| Error::DictionaryCorrupted)?;
+            tables.build(index, &def, None)?;
+        }
         Ok((tables, used))
     }
-}
 
-impl Tables {
-    // Builds the tables `defs` define (stage 2 of the split path).
+    // Builds table `index` (ll, of, ml) as `def` defines it; `dictionary` has the tables that
+    // `TableKind::Dictionary` stands for.
+    #[inline(always)]
     pub(crate) fn build(
+        &mut self,
+        index: usize,
+        def: &TableDef,
+        dictionary: Option<&Self>,
+    ) -> Result<(), Error> {
+        let custom = &mut self.custom[index];
+        match index {
+            0 => build_from_def(
+                &mut self.ll,
+                custom,
+                def,
+                dictionary.map(|tables| &tables.ll),
+                &LL_DEFAULT_TABLE,
+                (&LL_BASE, &LL_EXTRA_BITS),
+            ),
+            1 => {
+                build_from_def(
+                    &mut self.of,
+                    custom,
+                    def,
+                    dictionary.map(|tables| &tables.of),
+                    &OF_DEFAULT_TABLE,
+                    (&OF_BASE, &OF_EXTRA_BITS),
+                )?;
+                self.short_offsets = short_offset_share(&self.of) >= SHORT_OFFSET_SHARE_MIN;
+                Ok(())
+            }
+            _ => build_from_def(
+                &mut self.ml,
+                custom,
+                def,
+                dictionary.map(|tables| &tables.ml),
+                &ML_DEFAULT_TABLE,
+                (&ML_BASE, &ML_EXTRA_BITS),
+            ),
+        }
+    }
+
+    // Builds the tables `defs` define (stage 2 of the split path), whatever they held.
+    pub(crate) fn build_all(
         &mut self,
         defs: &TableDefs,
         dictionary: Option<&Dictionary>,
@@ -290,30 +326,10 @@ impl Tables {
         let dictionary = dictionary
             .and_then(Dictionary::entropy)
             .map(|entropy| &*entropy.sequences);
-        let [ll, of, ml] = defs;
-        build_from_def(
-            &mut self.ll,
-            ll,
-            dictionary.map(|tables| &tables.ll),
-            &LL_DEFAULT_TABLE,
-            (&LL_BASE, &LL_EXTRA_BITS),
-        )?;
-        build_from_def(
-            &mut self.of,
-            of,
-            dictionary.map(|tables| &tables.of),
-            &OF_DEFAULT_TABLE,
-            (&OF_BASE, &OF_EXTRA_BITS),
-        )?;
-        build_from_def(
-            &mut self.ml,
-            ml,
-            dictionary.map(|tables| &tables.ml),
-            &ML_DEFAULT_TABLE,
-            (&ML_BASE, &ML_EXTRA_BITS),
-        )?;
-        self.short_offsets = short_offset_share(&self.of) >= SHORT_OFFSET_SHARE_MIN;
         self.custom = [true; 3];
+        for (index, def) in defs.iter().enumerate() {
+            self.build(index, def, dictionary)?;
+        }
         Ok(())
     }
 }
@@ -326,6 +342,7 @@ impl SequencesState {
             has_tables: false,
             dictionary: None,
             in_dictionary: [false; 3],
+            defs: TableDefs::default(),
             dictionary_is_cold: false,
             dictionary_end_kept: false,
         }
@@ -341,113 +358,21 @@ impl SequencesState {
         self.has_tables = entropy.is_some();
         self.repeat_offsets = entropy.map_or(INITIAL_REPEAT_OFFSETS, |e| e.repeat_offsets);
         self.in_dictionary = [entropy.is_some(); 3];
+        for def in &mut self.defs {
+            def.kind = TableKind::Dictionary;
+        }
         if entropy.is_some() {
             self.tables.custom = [true; 3];
         }
     }
 
-    // Copies the dictionary's tables that blocks still use as they are.
-    fn copy_dictionary_tables(&mut self) {
-        let entropy = self
-            .dictionary
-            .as_ref()
-            .and_then(Dictionary::entropy)
-            .unwrap();
-        let (tables, dictionary) = (&mut *self.tables, &entropy.sequences);
-        let [ll, of, ml] = self.in_dictionary;
-        if ll {
-            tables.ll.copy_from(&dictionary.ll);
-        }
-        if of {
-            tables.of.copy_from(&dictionary.of);
-            tables.short_offsets = dictionary.short_offsets;
-        }
-        if ml {
-            tables.ml.copy_from(&dictionary.ml);
-        }
-        self.in_dictionary = [false; 3];
-    }
-
-    // `ZSTD_decodeSeqHeaders`: reads the sequence count and builds the tables.
-    // Returns the count and the bitstream that follows.
-    #[inline(always)]
-    pub(crate) fn read_header<'a>(&mut self, src: &'a [u8]) -> Result<(usize, &'a [u8]), Error> {
-        let (nb_seq, rest) = read_count(src)?;
-        if nb_seq == 0 {
-            return if rest.is_empty() {
-                Ok((0, rest))
-            } else {
-                Err(Error::CorruptionDetected)
-            };
-        }
-
-        let (&modes, mut rest) = rest.split_first().ok_or(Error::SrcSizeWrong)?;
-        if modes & 3 != 0 {
-            return Err(Error::CorruptionDetected);
-        }
-        let has_tables = self.has_tables;
-        let mode_of = [modes >> 6, (modes >> 4) & 3, (modes >> 2) & 3];
-        for (in_dictionary, mode) in self.in_dictionary.iter_mut().zip(mode_of) {
-            *in_dictionary &= mode == MODE_REPEAT;
-        }
-        let tables = &mut *self.tables;
-        let [ll_custom, of_custom, ml_custom] = &mut tables.custom;
-        let used = build_table(
-            &mut tables.ll,
-            ll_custom,
-            &LL_DEFAULT_TABLE,
-            TableSpec {
-                mode: modes >> 6,
-                max_symbol: LL_MAX_SYMBOL,
-                max_log: LL_TABLE_LOG_MAX,
-            },
-            (&LL_BASE, &LL_EXTRA_BITS),
-            rest,
-            has_tables,
-        )?;
-        rest = &rest[used..];
-        let used = build_table(
-            &mut tables.of,
-            of_custom,
-            &OF_DEFAULT_TABLE,
-            TableSpec {
-                mode: (modes >> 4) & 3,
-                max_symbol: OF_MAX_SYMBOL,
-                max_log: OF_TABLE_LOG_MAX,
-            },
-            (&OF_BASE, &OF_EXTRA_BITS),
-            rest,
-            has_tables,
-        )?;
-        if (modes >> 4) & 3 != MODE_REPEAT {
-            tables.short_offsets = short_offset_share(&tables.of) >= SHORT_OFFSET_SHARE_MIN;
-        }
-        rest = &rest[used..];
-        let used = build_table(
-            &mut tables.ml,
-            ml_custom,
-            &ML_DEFAULT_TABLE,
-            TableSpec {
-                mode: (modes >> 2) & 3,
-                max_symbol: ML_MAX_SYMBOL,
-                max_log: ML_TABLE_LOG_MAX,
-            },
-            (&ML_BASE, &ML_EXTRA_BITS),
-            rest,
-            has_tables,
-        )?;
-        if self.in_dictionary != [false; 3] && self.in_dictionary != [true; 3] {
-            self.copy_dictionary_tables();
-        }
-        Ok((nb_seq, &rest[used..]))
-    }
-
-    // `read_header` for the pipeline's stage 1: the tables are not built, `defs` become the
-    // ones the block decodes with (stage 2 builds them).
-    pub(crate) fn read_header_lazy<'a>(
+    // `ZSTD_decodeSeqHeaders`: reads the sequence count and the table modes. Returns the count and
+    // the bitstream that follows. With `BUILD` the tables are built here, else `defs` become the
+    // definitions of the block's tables, which stage 2 builds.
+    #[inline(never)]
+    pub(crate) fn read_header<'a, const BUILD: bool>(
         &mut self,
         src: &'a [u8],
-        defs: &mut TableDefs,
     ) -> Result<(usize, &'a [u8]), Error> {
         let (nb_seq, rest) = read_count(src)?;
         if nb_seq == 0 {
@@ -461,27 +386,56 @@ impl SequencesState {
         if modes & 3 != 0 {
             return Err(Error::CorruptionDetected);
         }
-        let limits = [
+        rest = self.read_table::<0, BUILD>(modes, rest)?;
+        rest = self.read_table::<1, BUILD>(modes, rest)?;
+        rest = self.read_table::<2, BUILD>(modes, rest)?;
+        if self.in_dictionary != [true; 3] {
+            // Repeated tables that are the dictionary's are used from `tables` from now on.
+            for index in 0..3 {
+                if BUILD && self.in_dictionary[index] {
+                    let dictionary = dictionary_tables(self.dictionary.as_ref());
+                    self.tables.build(index, &self.defs[index], dictionary)?;
+                }
+            }
+            self.in_dictionary = [false; 3];
+        }
+        Ok((nb_seq, rest))
+    }
+
+    // The table `INDEX` (ll, of, ml) of a block, its mode in `modes`: returns what follows it in
+    // `src`.
+    #[inline(always)]
+    fn read_table<'a, const INDEX: usize, const BUILD: bool>(
+        &mut self,
+        modes: u8,
+        src: &'a [u8],
+    ) -> Result<&'a [u8], Error> {
+        const LIMITS: [(u32, u32); 3] = [
             (LL_MAX_SYMBOL, LL_TABLE_LOG_MAX),
             (OF_MAX_SYMBOL, OF_TABLE_LOG_MAX),
             (ML_MAX_SYMBOL, ML_TABLE_LOG_MAX),
         ];
-        for (index, (max_symbol, max_log)) in limits.into_iter().enumerate() {
-            let mode = (modes >> (6 - 2 * index)) & 3;
-            self.in_dictionary[index] &= mode == MODE_REPEAT;
-            let spec = TableSpec {
-                mode,
-                max_symbol,
-                max_log,
+        let mode = (modes >> (6 - 2 * INDEX)) & 3;
+        self.in_dictionary[INDEX] &= mode == MODE_REPEAT;
+        if mode == MODE_REPEAT {
+            return if self.has_tables {
+                Ok(src)
+            } else {
+                Err(Error::CorruptionDetected)
             };
-            let (def, used) = describe_table(spec, rest, self.has_tables)?;
-            defs[index] = def.unwrap_or(defs[index]);
-            rest = &rest[used..];
         }
-        if self.in_dictionary != [true; 3] {
-            self.in_dictionary = [false; 3];
+        let (max_symbol, max_log) = LIMITS[INDEX];
+        let spec = TableSpec {
+            mode,
+            max_symbol,
+            max_log,
+        };
+        let used = describe_table(spec, src, &mut self.defs[INDEX])?;
+        if BUILD {
+            let dictionary = dictionary_tables(self.dictionary.as_ref());
+            self.tables.build(INDEX, &self.defs[INDEX], dictionary)?;
         }
-        Ok((nb_seq, rest))
+        Ok(&src[used..])
     }
 
     pub(crate) const fn repeat_offsets(&self) -> [u32; 3] {
@@ -499,6 +453,10 @@ impl SequencesState {
         [self.has_tables, ll, of, ml, self.dictionary_is_cold]
     }
 
+    pub(crate) const fn defs(&self) -> &TableDefs {
+        &self.defs
+    }
+
     // Back to the state `flags`, `repeat_offsets` and `defs` (the tables of the last block)
     // describe, after blocks planned further ahead changed it.
     pub(crate) fn restore(&mut self, flags: [bool; 5], repeat_offsets: [u32; 3], defs: &TableDefs) {
@@ -506,8 +464,9 @@ impl SequencesState {
         (self.has_tables, self.in_dictionary, self.dictionary_is_cold) =
             (has_tables, [ll, of, ml], cold);
         self.repeat_offsets = repeat_offsets;
+        self.defs = *defs;
         if self.in_dictionary != [true; 3] {
-            let _ = self.tables.build(defs, self.dictionary.as_ref());
+            let _ = self.tables.build_all(defs, self.dictionary.as_ref());
         }
     }
 
@@ -515,7 +474,7 @@ impl SequencesState {
     // from the first sequence on, and the cold dictionary flag is used up. Returns that flag.
     pub(crate) fn begin_block(&mut self, nb_seq: usize) -> bool {
         self.has_tables |= nb_seq > 0;
-        core::mem::take(&mut self.dictionary_is_cold)
+        mem::take(&mut self.dictionary_is_cold)
     }
 
     // The tables the block's sequences decode with: the dictionary's until one is read.
@@ -1082,114 +1041,72 @@ fn read_count(src: &[u8]) -> Result<(usize, &[u8]), Error> {
     Ok((nb_seq, rest))
 }
 
-// `build_table` without the build: the definition of the table (`None` to keep the last one)
-// and the bytes of `src` used.
-fn describe_table(
-    spec: TableSpec,
-    src: &[u8],
-    has_tables: bool,
-) -> Result<(Option<TableDef>, usize), Error> {
+// The tables of the dictionary, if it has any.
+fn dictionary_tables(dictionary: Option<&Dictionary>) -> Option<&Tables> {
+    dictionary
+        .and_then(Dictionary::entropy)
+        .map(|entropy| &*entropy.sequences)
+}
+
+// Sets `def` to the table read from `src` (not a repeat) and returns the bytes of `src` used
+// (`ZSTD_buildSeqTable` without the build).
+fn describe_table(spec: TableSpec, src: &[u8], def: &mut TableDef) -> Result<usize, Error> {
     match spec.mode {
         MODE_RLE => {
             let symbol = *src.first().ok_or(Error::CorruptionDetected)?;
             if u32::from(symbol) > spec.max_symbol {
                 return Err(Error::CorruptionDetected);
             }
-            Ok((Some(TableDef::Rle(symbol)), 1))
+            def.kind = TableKind::Rle(symbol);
+            Ok(1)
         }
-        MODE_PREDEFINED => Ok((Some(TableDef::Predefined), 0)),
-        MODE_COMPRESSED => {
-            let mut norm = [0i16; MAX_SYMBOLS];
-            let ncount = read_ncount(&mut norm[..=spec.max_symbol as usize], src)?;
+        MODE_PREDEFINED => {
+            def.kind = TableKind::Predefined;
+            Ok(0)
+        }
+        _ => {
+            let ncount = read_ncount(&mut def.norm[..=spec.max_symbol as usize], src)?;
             if ncount.table_log > spec.max_log {
                 return Err(Error::CorruptionDetected);
             }
-            let described = TableDef::Described {
-                norm,
-                max_symbol: ncount.max_symbol as u8,
-                table_log: ncount.table_log as u8,
-            };
-            Ok((Some(described), ncount.bytes_read))
+            def.kind = TableKind::Counts;
+            def.max_symbol = ncount.max_symbol as u8;
+            def.table_log = ncount.table_log as u8;
+            Ok(ncount.bytes_read)
         }
-        _ if has_tables => Ok((None, 0)),
-        _ => Err(Error::CorruptionDetected),
     }
 }
 
-// Builds `table` as `def` defines it.
+// Builds `table` as `def` defines it. `custom`: the cells are not a copy of the predefined
+// table, which is then not copied again.
 fn build_from_def<const N: usize>(
     table: &mut FseTable<N>,
+    custom: &mut bool,
     def: &TableDef,
     dictionary: Option<&FseTable<N>>,
     default: &FseTable<N>,
     (base, extra_bits): (&[u32], &[u8]),
 ) -> Result<(), Error> {
-    match *def {
-        TableDef::Dictionary => table.copy_from(dictionary.ok_or(Error::CorruptionDetected)?),
-        TableDef::Predefined => table.copy_from(default),
-        TableDef::Rle(symbol) => {
+    let was_custom = mem::replace(custom, true);
+    match def.kind {
+        TableKind::Dictionary => table.copy_from(dictionary.ok_or(Error::CorruptionDetected)?),
+        TableKind::Predefined => {
+            *custom = false;
+            if was_custom {
+                table.copy_from(default);
+            }
+        }
+        TableKind::Rle(symbol) => {
             table.set_rle(base[usize::from(symbol)], extra_bits[usize::from(symbol)]);
         }
-        TableDef::Described {
-            ref norm,
-            max_symbol,
-            table_log,
-        } => table.build(
-            &norm[..=usize::from(max_symbol)],
-            u32::from(table_log),
+        TableKind::Counts => table.build(
+            &def.norm[..=usize::from(def.max_symbol)],
+            u32::from(def.table_log),
             base,
             extra_bits,
         ),
     }
     Ok(())
-}
-
-// `ZSTD_buildSeqTable`: returns the bytes of `src` used.
-fn build_table<const N: usize>(
-    table: &mut FseTable<N>,
-    custom: &mut bool,
-    default: &FseTable<N>,
-    spec: TableSpec,
-    (base, extra_bits): (&[u32], &[u8]),
-    src: &[u8],
-    has_tables: bool,
-) -> Result<usize, Error> {
-    match spec.mode {
-        MODE_RLE => {
-            let symbol = *src.first().ok_or(Error::CorruptionDetected)?;
-            if u32::from(symbol) > spec.max_symbol {
-                return Err(Error::CorruptionDetected);
-            }
-            table.set_rle(base[usize::from(symbol)], extra_bits[usize::from(symbol)]);
-            *custom = true;
-            Ok(1)
-        }
-        MODE_PREDEFINED => {
-            if *custom {
-                table.copy_from(default);
-                *custom = false;
-            }
-            Ok(0)
-        }
-        MODE_COMPRESSED => {
-            let mut norm = [0i16; MAX_SYMBOLS];
-            let norm = &mut norm[..=spec.max_symbol as usize];
-            let ncount = read_ncount(norm, src)?;
-            if ncount.table_log > spec.max_log {
-                return Err(Error::CorruptionDetected);
-            }
-            table.build(
-                &norm[..=ncount.max_symbol as usize],
-                ncount.table_log,
-                base,
-                extra_bits,
-            );
-            *custom = true;
-            Ok(ncount.bytes_read)
-        }
-        _ if has_tables => Ok(0),
-        _ => Err(Error::CorruptionDetected),
-    }
 }
 
 // `ZSTD_execSequence`: executes one sequence, wild copies when the match and

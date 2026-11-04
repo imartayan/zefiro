@@ -4,6 +4,27 @@ use alloc::vec::Vec;
 use super::*;
 use crate::testing::{Rng, TestTree, assert_same, miri_scaled};
 
+impl HufTable {
+    fn read_x1(&mut self, src: &[u8]) -> Result<usize, Error> {
+        self.read_x1_at_least(src, FAST_TABLE_LOG)
+    }
+
+    fn read_table(&mut self, src: &[u8], four_streams_len: Option<usize>) -> Result<usize, Error> {
+        let mut def = HufDef::default();
+        let size = def.read(src, four_streams_len)?;
+        self.build(&def)?;
+        Ok(size)
+    }
+
+    fn read_table_1x(&mut self, src: &[u8]) -> Result<usize, Error> {
+        self.read_table(src, None)
+    }
+
+    fn read_table_4x(&mut self, dst_len: usize, src: &[u8]) -> Result<usize, Error> {
+        self.read_table(src, Some(dst_len))
+    }
+}
+
 // Raw header for the weights 1, 1, 2, 3, 3 (the implied sixth is 3): table log 4.
 const DIRECT_WEIGHTS: [u8; 4] = [0x84, 0x11, 0x23, 0x30];
 

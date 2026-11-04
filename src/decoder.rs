@@ -274,7 +274,6 @@ impl Decoder {
 
         let mut input_pos = header_size;
         let mut written = 0;
-        let out_len = output.len;
         loop {
             let block = parse_block_header(&input[input_pos..])?;
             input_pos += BLOCK_HEADER_SIZE;
@@ -283,7 +282,6 @@ impl Decoder {
                 return Err(Error::SrcSizeWrong);
             }
             let block_input = &input[input_pos..input_pos + block_input_size];
-            let remaining = out_len - written;
             let block_written = match block.block_type {
                 BlockType::Compressed => {
                     let ext = self
@@ -304,31 +302,13 @@ impl Decoder {
                         history,
                     )?
                 }
-                BlockType::Raw => {
-                    if block_input_size > remaining {
-                        return Err(Error::DstSizeTooSmall);
-                    }
-                    // SAFETY: `block_input_size` bytes fit within `remaining`.
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            block_input.as_ptr(),
-                            output.base.add(written),
-                            block_input_size,
-                        );
-                    }
-                    block_input_size
-                }
-                BlockType::Rle => {
-                    let size = block.size as usize;
-                    if size > remaining {
-                        return Err(Error::DstSizeTooSmall);
-                    }
-                    // SAFETY: `size` bytes fit within `remaining`.
-                    unsafe {
-                        core::ptr::write_bytes(output.base.add(written), block_input[0], size);
-                    }
-                    size
-                }
+                BlockType::Raw | BlockType::Rle => write_plain_block(
+                    block.block_type,
+                    block_input,
+                    block.size as usize,
+                    output,
+                    written,
+                )?,
             };
             if header.checksum && self.verify_checksum {
                 blocks.hash_block(&mut self.checksum, output, written, block_written);
@@ -353,6 +333,35 @@ impl Decoder {
         let checksum_size = if header.checksum { CHECKSUM_SIZE } else { 0 };
         Ok((input_pos + checksum_size, written))
     }
+}
+
+// Writes a raw block (`src`) or an RLE one (`src[0]`, `rle_size` times) at `output[start..]`.
+// Returns the bytes written.
+pub(crate) fn write_plain_block(
+    block_type: BlockType,
+    src: &[u8],
+    rle_size: usize,
+    output: Output,
+    start: usize,
+) -> Result<usize, Error> {
+    let size = if block_type == BlockType::Raw {
+        src.len()
+    } else {
+        rle_size
+    };
+    if size > output.len - start {
+        return Err(Error::DstSizeTooSmall);
+    }
+    // SAFETY: `size` bytes fit in `output` after `start`.
+    unsafe {
+        let destination = output.base.add(start);
+        if block_type == BlockType::Raw {
+            core::ptr::copy_nonoverlapping(src.as_ptr(), destination, size);
+        } else {
+            core::ptr::write_bytes(destination, src[0], size);
+        }
+    }
+    Ok(size)
 }
 
 // Hashes `output[start..start + len]`, which a block just wrote.
@@ -399,7 +408,7 @@ pub(crate) fn decompress_compressed_block(
     }
     let capacity = output.len - start;
     let (literals, literals_size) = literals_state.decode(block, capacity, block_size_max)?;
-    let (nb_seq, stream) = sequences.read_header(&block[literals_size..])?;
+    let (nb_seq, stream) = sequences.read_header::<true>(&block[literals_size..])?;
     if nb_seq > 0 && capacity == 0 {
         return Err(Error::DstSizeTooSmall);
     }

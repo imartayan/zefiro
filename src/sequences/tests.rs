@@ -18,7 +18,7 @@ fn literals(bytes: &[u8]) -> (Vec<u8>, usize) {
 
 fn header(src: &[u8]) -> Result<(usize, usize), Error> {
     SequencesState::new()
-        .read_header(src)
+        .read_header::<true>(src)
         .map(|(nb_seq, stream)| (nb_seq, stream.len()))
 }
 
@@ -64,7 +64,7 @@ fn run(
         len,
         in_input: false,
     };
-    let (nb_seq, stream) = state.read_header(block)?;
+    let (nb_seq, stream) = state.read_header::<true>(block)?;
     let mut out = [history, &vec![0; capacity]].concat();
     let end = history.len() + capacity;
     let place = Placement {
@@ -139,12 +139,12 @@ fn repeat_mode_needs_a_block_that_started_decoding() {
     let mut state = SequencesState::new();
     let repeat = [1, modes(REPEAT, REPEAT, REPEAT), 1];
     assert_eq!(
-        state.read_header(&repeat).err(),
+        state.read_header::<true>(&repeat).err(),
         Some(Error::CorruptionDetected)
     );
     // A block with sequences sets the flag even if it then fails.
     let all_predefined = [1, 0, 0];
-    let (nb_seq, stream) = state.read_header(&all_predefined).unwrap();
+    let (nb_seq, stream) = state.read_header::<true>(&all_predefined).unwrap();
     let (padded, len) = literals(b"");
     let literals = Literals {
         padded: &padded,
@@ -162,10 +162,10 @@ fn repeat_mode_needs_a_block_that_started_decoding() {
             .execute_block(nb_seq, stream, &literals, uninit_mut(&mut out), &place)
             .is_err()
     );
-    assert!(state.read_header(&repeat).is_ok());
+    assert!(state.read_header::<true>(&repeat).is_ok());
     state.start_frame();
     assert_eq!(
-        state.read_header(&repeat).err(),
+        state.read_header::<true>(&repeat).err(),
         Some(Error::CorruptionDetected)
     );
 }
@@ -229,7 +229,7 @@ fn run_split(
         len,
         in_input: false,
     };
-    let (nb_seq, stream) = state.read_header(block)?;
+    let (nb_seq, stream) = state.read_header::<true>(block)?;
     let mut out = [history, &vec![0; capacity]].concat();
     let place = Placement {
         range: history.len()..history.len() + capacity,
@@ -347,7 +347,7 @@ fn matches_reach_the_previous_ring_segment() {
     // more, and room for its slack after the history) or the exact path.
     let block = rle_block(3, (0, 0, 0), &[]);
     let mut state = SequencesState::new();
-    let (nb_seq, stream) = state.read_header(&block).unwrap();
+    let (nb_seq, stream) = state.read_header::<true>(&block).unwrap();
     let (padded, len) = literals(b"");
     let literals = Literals {
         padded: &padded,
@@ -398,7 +398,7 @@ fn matches_reach_a_dictionary() {
     // that take the wild copy and the exact path.
     let block = rle_block(3, (0, 0, 0), &[]);
     let mut state = SequencesState::new();
-    let (nb_seq, stream) = state.read_header(&block).unwrap();
+    let (nb_seq, stream) = state.read_header::<true>(&block).unwrap();
     let (padded, len) = literals(b"");
     let literals = Literals {
         padded: &padded,
@@ -492,7 +492,7 @@ fn output_limit_follows_the_literals_placement() {
 #[test]
 fn short_offsets_are_flagged_by_the_offset_table_and_kept_by_repeat_mode() {
     let flag = |state: &mut SequencesState, block: &[u8]| {
-        state.read_header(block).unwrap();
+        state.read_header::<true>(block).unwrap();
         state.tables.short_offsets
     };
     let mut state = SequencesState::new();
@@ -521,7 +521,7 @@ fn run_loop<const PREFETCH: bool>(
         len,
         in_input: false,
     };
-    let (nb_seq, stream) = state.read_header(block)?;
+    let (nb_seq, stream) = state.read_header::<true>(block)?;
     let mut out = [history, &vec![0; capacity]].concat();
     let end = history.len() + capacity;
     let place = Placement {
@@ -586,14 +586,14 @@ fn prefetch_loop_agrees_with_the_regular_loop_except_for_the_stream_end() {
 fn prefetch_loop_is_chosen_like_libzstd() {
     let mut state = SequencesState::new();
     let predefined = [9, modes(PREDEFINED, PREDEFINED, PREDEFINED), 0];
-    state.read_header(&predefined).unwrap();
+    state.read_header::<true>(&predefined).unwrap();
     // Predefined offsets: codes 23 to 28 are 6 of 32 cells, 48 out of 256.
     assert_eq!(long_offset_share(&state.tables.of), 48);
     let rle_long = [1, modes(PREDEFINED, RLE, PREDEFINED), 23];
     let mut state = SequencesState::new();
-    state.read_header(&rle_long).unwrap();
+    state.read_header::<true>(&rle_long).unwrap();
     assert_eq!(long_offset_share(&state.tables.of), 256);
     let rle_short = [1, modes(PREDEFINED, RLE, PREDEFINED), 22];
-    state.read_header(&rle_short).unwrap();
+    state.read_header::<true>(&rle_short).unwrap();
     assert_eq!(long_offset_share(&state.tables.of), 0);
 }

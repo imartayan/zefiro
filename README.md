@@ -76,16 +76,16 @@ You can run the detailed benchmark with:
 cargo r -r -p compare --bin bench -- --exhaustive
 ```
 
-`--threads 4` (`-t 4`) adds the multi-threaded zefiro and rust-zstd with 4 threads.
+`--threads 4` adds the multi-threaded zefiro and rust-zstd with 4 threads, and `--large` adds larger inputs (fetched with `scripts/fetch-large-corpus.sh`).
 
 #### ARM (Apple M1, 2026-11-04)
 
 | Mode | zefiro | rust-zstd | ruzstd | zrip | mzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | **+4.2%** | **+4.2%** | -74.7% | -29.7% | -12.0% |
-| Stream | **+5.2%** | +1.2% | -72.6% | -60.4% | -15.9% |
-| One-shot, 4 threads | **+81.8%** | +36.8% | - | - | - |
-| Stream, 4 threads | **+92.7%** | +37.7% | - | - | - |
+| One-shot | **+4.2%** | **+4.2%** | -74.8% | -30.0% | -12.1% |
+| Stream | **+5.3%** | +1.4% | -72.6% | -60.4% | -15.8% |
+| One-shot, 4 threads | +82.6% | **+84.0%** | - | - | - |
+| Stream, 4 threads | **+93.4%** | +84.5% | - | - | - |
 
 #### x86 (AMD Zen 3, 2026-11-04)
 
@@ -98,6 +98,6 @@ cargo r -r -p compare --bin bench -- --exhaustive
 
 ## Acknowledgements
 
-Several optimization tricks come from [rust-zstd](https://github.com/physwkim/rust-zstd).
+Several optimization tricks and the design of the multi-threaded pipeline are adapted from [rust-zstd](https://github.com/physwkim/rust-zstd); see [OPTIMIZATIONS.md](OPTIMIZATIONS.md).
 
-The testing and fuzzing setup is modeled after [sirocco](https://github.com/srijs/sirocco), a gzip decoder which also inspired the name.
+The testing and fuzzing setup is modeled after [sirocco](https://github.com/srijs/sirocco), a gzip decoder which also inspired the name "zefiro" (Italian for [zephyr](https://en.wikipedia.org/wiki/Zephyr)).

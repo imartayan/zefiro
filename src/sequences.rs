@@ -1156,13 +1156,15 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
             || before_segment
         {
             // SAFETY: the checks of `exec_sequence_cold` are the ones it needs.
-            return unsafe { exec_sequence_cold(sequence, cursor, limits) };
+            return unsafe {
+                exec_sequence_cold(literal_length, match_length, offset, cursor, limits)
+            };
         }
     } else {
         if literal_length > literals_left
             || literals_end.wrapping_add(match_length) > limits.fast_end
         {
-            return exec_sequence_end(sequence, cursor, limits);
+            return exec_sequence_end(literal_length, match_length, offset, cursor, limits);
         }
         if before_segment {
             return Err(Error::CorruptionDetected);
@@ -1203,11 +1205,13 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
 #[cold]
 #[inline(never)]
 unsafe fn exec_sequence_cold(
-    sequence: Sequence,
+    literal_length: usize,
+    match_length: usize,
+    offset: usize,
     cursor: Cursor,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
-    let literals_end = cursor.op.wrapping_add(sequence.literal_length);
+    let literals_end = cursor.op.wrapping_add(literal_length);
     // SAFETY: the cursor's literals position never passes the end of the literals.
     let literals_left = unsafe {
         limits
@@ -1215,11 +1219,14 @@ unsafe fn exec_sequence_cold(
             .add(limits.literals.len())
             .offset_from_unsigned(cursor.lit)
     };
-    if sequence.literal_length > literals_left
-        || literals_end.wrapping_add(sequence.match_length) > limits.fast_end
-    {
-        return exec_sequence_end(sequence, cursor, limits);
+    if literal_length > literals_left || literals_end.wrapping_add(match_length) > limits.fast_end {
+        return exec_sequence_end(literal_length, match_length, offset, cursor, limits);
     }
+    let sequence = Sequence {
+        literal_length,
+        match_length,
+        offset,
+    };
     // SAFETY: the checks above are the ones `exec_sequence_ext` needs.
     unsafe { exec_sequence_ext(sequence, cursor, limits) }
 }
@@ -1256,7 +1263,13 @@ unsafe fn exec_sequence_ext(
             // copies, and reads past the ring are out: the exact path.
             let clobbered = source < match_start + WILDCOPY_OVERLENGTH;
             if clobbered || source + from_ext + WILDCOPY_OVERLENGTH > limits.out_len {
-                return exec_sequence_end(sequence, cursor, limits);
+                return exec_sequence_end(
+                    sequence.literal_length,
+                    sequence.match_length,
+                    sequence.offset,
+                    cursor,
+                    limits,
+                );
             }
             limits.out_base.cast_const()
         }
@@ -1285,14 +1298,22 @@ unsafe fn exec_sequence_ext(
     }
 }
 
-// `ZSTD_execSequenceEnd` on a cursor: moves it through the safe exact version.
+// `ZSTD_execSequenceEnd` on a cursor: moves it through the safe exact version. The sequence
+// comes as scalars: passed whole, it was stored to the stack before every hot-path check (x86).
 #[cold]
 #[inline(never)]
 fn exec_sequence_end(
-    sequence: Sequence,
+    literal_length: usize,
+    match_length: usize,
+    offset: usize,
     cursor: Cursor,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
+    let sequence = Sequence {
+        literal_length,
+        match_length,
+        offset,
+    };
     let op = cursor.op.addr() - limits.out_base.addr();
     let mut literal_pos = cursor.lit.addr() - limits.lit_base.addr();
     let op = exec_sequence_exact(

@@ -58,6 +58,10 @@ const CHECKSUM_SIZE: usize = 4;
 // From this many threads the workers hash the output; with fewer they have no time to spare
 // (chr2 and the FASTQ samples, `Reader`: 2 to 3% slower at 3 threads). Two in tests and fuzzing.
 const HASH_OFFLOAD_MIN_THREADS: usize = if cfg!(any(test, fuzzing)) { 2 } else { 4 };
+// The workers hash a block once this many newer ones follow it, fewer near the start and end of
+// the frame or the end of the ring: hashing the output the caller still reads as match sources
+// took the lines from its cache (Zen 3, chr2: stage 3 10% slower).
+const HASH_LAG: usize = 8;
 
 // What the sections and blocks so far left in the literals and sequences states, besides
 // the tables: `LiteralsState::flags` and `SequencesState::flags`.
@@ -111,6 +115,8 @@ struct Queue<'a> {
     // The frame's XXH64 state, `None` while a thread hashes `regions` (in order) into it.
     hasher: Option<XxHash64>,
     regions: VecDeque<Region>,
+    // Finished blocks not handed to the hash yet (`HASH_LAG`).
+    lagging: VecDeque<Region>,
     // The frame is over, or the reader is dropped: nobody waits any more.
     stop: bool,
 }
@@ -148,6 +154,8 @@ struct Pipeline<'a> {
     // The workers hash the output, and the frame's hash state is in the queue.
     offload_hash: bool,
     hashing: bool,
+    // The first block of the frame.
+    frame_start: usize,
     // Streaming: the states after the last block executed, to go back to when the serial code
     // takes over, which it has done when `serial` is set.
     boundary: Snapshot,
@@ -354,6 +362,7 @@ impl<'a> Pipeline<'a> {
     // The frame's jobs not executed, and the ones the workers return late, are dropped.
     fn discard_jobs(&mut self) {
         self.executed = self.planned;
+        self.frame_start = self.planned;
         let (pending, decoded) = {
             let mut queue = self.shared.lock();
             (mem::take(&mut queue.pending), mem::take(&mut queue.decoded))
@@ -479,12 +488,35 @@ impl<'a> Pipeline<'a> {
             self.hashing = true;
             queue.hasher = Some(mem::take(checksum));
         }
-        queue.regions.push_back(Region {
+        let Queue {
+            pending,
+            regions,
+            lagging,
+            ..
+        } = &mut *queue;
+        lagging.push_back(Region {
             // SAFETY: the block ends within `output`.
             start: unsafe { output.base.add(start) },
             len,
         });
+        // Blocks left to execute, and that fit before the end of the output (or the ring wraps).
+        let to_execute = if self.planning {
+            HASH_LAG
+        } else {
+            self.planned - self.executed
+        };
+        let room = (output.len - start - len) / self.block_size_max.max(1);
+        let progress = (self.executed - self.frame_start) / 4;
+        let lag = HASH_LAG.min(to_execute).min(room).min(progress);
+        // Near the end, workers with no job pending may sleep until one is.
+        let wake = to_execute < HASH_LAG && lagging.len() > lag && pending.is_empty();
+        while lagging.len() > lag {
+            regions.extend(lagging.pop_front());
+        }
         drop(queue);
+        if wake {
+            self.shared.pending_or_stop.notify_one();
+        }
     }
 
     // Waits until all that was queued is hashed, helping with it, and gives the state back.
@@ -492,6 +524,12 @@ impl<'a> Pipeline<'a> {
         if !mem::take(&mut self.hashing) {
             return;
         }
+        let mut queue = self.shared.lock();
+        let Queue {
+            regions, lagging, ..
+        } = &mut *queue;
+        regions.extend(lagging.drain(..));
+        drop(queue);
         loop {
             let mut queue = self.shared.lock();
             if queue.stop {

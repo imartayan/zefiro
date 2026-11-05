@@ -94,10 +94,10 @@ cargo r -r -p compare --bin bench -- --exhaustive
 
 | Mode | zefiro | rust-zstd | ruzstd | zrip | mzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | +6.5% | **+10.4%** | -68.2% | -17.9% | +0.9% |
-| Stream | +6.5% | **+8.8%** | -64.8% | -44.8% | -2.3% |
-| One-shot, 4 threads | +77.1% | **+91.9%** | - | - | - |
-| Stream, 4 threads | +70.8% | **+73.9%** | - | - | - |
+| One-shot | +10.3% | **+10.8%** | -67.1% | -16.2% | +2.5% |
+| Stream | **+9.9%** | +8.8% | -64.1% | -44.3% | -1.8% |
+| One-shot, 4 threads | +89.1% | **+93.6%** | - | - | - |
+| Stream, 4 threads | **+80.3%** | +77.7% | - | - | - |
 
 ## Acknowledgements
 

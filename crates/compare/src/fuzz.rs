@@ -214,6 +214,20 @@ fn assert_streams_agree(
     if raw_blocks && (lossless.error.is_some() || same_pieces.error.is_some()) {
         return;
     }
+    // The serial verdict also depends on the pieces where libzstd's stream does: it fails a
+    // frame of content size 0 that comes in pieces, and decodes it whole. The threaded stream
+    // then has the verdict of the same pieces, with at least their bytes.
+    if lossless.error != same_pieces.error {
+        let common = threaded.bytes.len().min(same_pieces.bytes.len());
+        assert!(
+            threaded.bytes[..common] == same_pieces.bytes[..common],
+            "{what}: bytes differ"
+        );
+        if !threaded.cut && !same_pieces.cut {
+            assert_eq!(threaded.error, same_pieces.error, "{what}");
+        }
+        return;
+    }
     let common = threaded.bytes.len().min(lossless.bytes.len());
     assert!(
         threaded.bytes[..common] == lossless.bytes[..common],

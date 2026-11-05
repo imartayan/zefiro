@@ -526,10 +526,23 @@ impl DecodedSequences {
         self.raw.clear();
         self.raw.reserve(nb_seq);
         let mut offsets = REL_START;
-        for index in 0..nb_seq {
-            let fields = decoder.decode_fields::<false>(index + 1 == nb_seq);
-            self.raw.push(relative_sequence(&mut offsets, &fields));
+        let out = self.raw.as_mut_ptr();
+        // The fast phase of the x86 sequence loop while the stream has room, then the exact code.
+        let mut index = 0;
+        while index + 1 < nb_seq && decoder.has_room_for_sequence() {
+            let sequence = relative_sequence(&mut offsets, &decoder.decode_fields::<true>(false));
+            // SAFETY: `nb_seq` sequences are reserved.
+            unsafe { out.add(index).write(sequence) };
+            index += 1;
         }
+        for index in index..nb_seq {
+            let fields = decoder.decode_fields::<false>(index + 1 == nb_seq);
+            let sequence = relative_sequence(&mut offsets, &fields);
+            // SAFETY: as above.
+            unsafe { out.add(index).write(sequence) };
+        }
+        // SAFETY: the `nb_seq` sequences are written.
+        unsafe { self.raw.set_len(nb_seq) };
         self.end = offsets;
         self.ended = decoder.bits.end_of_stream();
         Ok(())

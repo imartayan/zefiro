@@ -96,8 +96,8 @@ cargo r -r -p compare --bin bench -- --exhaustive
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | One-shot | +6.5% | **+10.4%** | -68.2% | -17.9% | +0.9% |
 | Stream | +6.5% | **+8.8%** | -64.8% | -44.8% | -2.3% |
-| One-shot, 4 threads | +74.5% | **+94.6%** | - | - | - |
-| Stream, 4 threads | +68.4% | **+76.7%** | - | - | - |
+| One-shot, 4 threads | +77.1% | **+91.9%** | - | - | - |
+| Stream, 4 threads | +70.8% | **+73.9%** | - | - | - |
 
 ## Acknowledgements
 

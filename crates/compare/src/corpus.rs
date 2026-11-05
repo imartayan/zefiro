@@ -74,7 +74,7 @@ pub fn test_corpus() -> Vec<Sample> {
 /// Synthetic corpus plus every file under `$ZSTD_CORPUS_DIR` or `corpus/`.
 ///
 /// Files (the output of `scripts/fetch-corpus.sh`) are named by their relative path.
-/// `corpus/decodecorpus` is left out: it holds frames, not raw data.
+/// `corpus/decodecorpus` is left out: it holds frames, not raw data. So is `corpus/large`.
 #[must_use]
 pub fn corpus() -> Vec<Sample> {
     let mut out = synthetic_corpus();
@@ -90,7 +90,7 @@ pub fn corpus() -> Vec<Sample> {
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
-        if !name.starts_with("decodecorpus/") {
+        if !name.starts_with("decodecorpus/") && !name.starts_with("large/") {
             out.push(Sample {
                 name,
                 data: std::fs::read(&path).unwrap(),

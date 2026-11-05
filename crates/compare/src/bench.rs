@@ -18,6 +18,9 @@ use crate::{Libzstd, Params, Rng, Step, compress, compress_with_dictionary, trai
 
 const CORPUS_FILES: &[&str] = &["elf_8m", "rust_src_8m", "silesia-small.tar", "words_1m"];
 const LEVELS: &[i32] = &[1, 3, 9, 19, 22];
+// Inputs of `scripts/fetch-large-corpus.sh`, benchmarked with `--large` when present.
+const LARGE_FILES: &[&str] = &["large/silesia.tar"];
+const LARGE_LEVELS: &[i32] = &[3, 9, 19];
 const SMALL_FRAME_SIZES: &[usize] = &[256, 1 << 10, 4 << 10];
 const SMALL_LEVEL: i32 = 3;
 const DICTIONARY_SIZE: usize = 64 << 10;
@@ -103,6 +106,9 @@ struct Args {
     /// Every impl and case.
     #[arg(short, long)]
     exhaustive: bool,
+    /// Also run the large cases (see scripts/fetch-large-corpus.sh).
+    #[arg(short, long)]
+    large: bool,
     /// Add the multi-threaded impls with this many threads.
     #[arg(short, long, value_parser = positive())]
     threads: Option<usize>,
@@ -873,7 +879,7 @@ pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
 
     // With `--file` only, the built-in cases are skipped.
     let mut cases = if args.files.is_empty() || !args.cases.is_empty() {
-        cases(&args.cases)
+        cases(&args.cases, args.large)
     } else {
         Vec::new()
     };
@@ -895,29 +901,46 @@ pub fn main(extra_impls: Vec<Box<dyn Impl>>) {
     }
 }
 
-/// The cases whose name contains one of `filters` (all if empty). Frames of the
-/// large cases are compressed once with libzstd and cached under `target/`.
+/// The cases whose name contains one of `filters` (all if empty), with the `large` ones
+/// if asked. Frames of the big cases are compressed once with libzstd and cached under `target/`.
 #[must_use]
-pub fn cases(filters: &[String]) -> Vec<Case> {
+pub fn cases(filters: &[String], large: bool) -> Vec<Case> {
     let keep = |name: &str| filters.is_empty() || filters.iter().any(|f| name.contains(f.as_str()));
     let mut out = Vec::new();
 
-    for file in CORPUS_FILES {
-        let levels: Vec<_> = LEVELS
+    let mut skipped = Vec::new();
+    let regular = CORPUS_FILES.iter().map(|file| (file, LEVELS));
+    let large_files = LARGE_FILES
+        .iter()
+        .filter(|_| large)
+        .map(|file| (file, LARGE_LEVELS));
+    for (file, all_levels) in regular.chain(large_files) {
+        let base = file.rsplit('/').next().unwrap_or(file);
+        let levels: Vec<_> = all_levels
             .iter()
-            .filter(|level| keep(&format!("{file}-l{level}")))
+            .filter(|level| keep(&format!("{base}-l{level}")))
             .collect();
         if levels.is_empty() {
+            continue;
+        }
+        if LARGE_FILES.contains(file) && !corpus_dir().is_some_and(|dir| dir.join(file).is_file()) {
+            skipped.push(base);
             continue;
         }
         let source = Arc::new(read_corpus_file(file));
         let hash = content_hash(&source);
         for &&level in &levels {
-            let name = format!("{file}-l{level}");
+            let name = format!("{base}-l{level}");
             let frame = compress_cached(&name, &source, hash, &Params::level(level));
             let range = 0..source.len();
             out.push(Case::new(name, source.clone(), vec![(frame, range)]));
         }
+    }
+    if !skipped.is_empty() {
+        eprintln!(
+            "skipping large cases ({}): run scripts/fetch-large-corpus.sh",
+            skipped.join(", ")
+        );
     }
 
     if keep("long27") {

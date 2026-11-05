@@ -6,7 +6,7 @@
 A fast and safe zstd decoder in pure Rust.
 
 The Rust zstd crates I found were either slower than `libzstd`, too large to audit, or not tested against it as thoroughly as I wanted, so I wrote one that is none of these: zefiro matches the C speed in about 5K lines, checked against `libzstd` on every path.
-It can also decompress large frames on several threads, about 1.8x faster than `libzstd` with 4 threads, with the same output as on one.
+It can also decompress large frames on several threads, about 2x faster than `libzstd` with 4 threads, with the same output as on one.
 It only decodes; for compression, use [zstd](https://crates.io/crates/zstd).
 
 Every decoding path is checked for exact parity with `libzstd`.
@@ -78,14 +78,14 @@ cargo r -r -p compare --bin bench -- --exhaustive
 
 `--threads 4` adds the multi-threaded zefiro and rust-zstd with 4 threads, and `--large` adds larger inputs (fetched with `scripts/fetch-large-corpus.sh`).
 
-#### ARM (Apple M1, 2026-11-04)
+#### ARM (Apple M1, 2026-11-05)
 
 | Mode | zefiro | rust-zstd | ruzstd | zrip | mzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | **+4.2%** | **+4.2%** | -74.8% | -30.0% | -12.1% |
-| Stream | **+5.3%** | +1.4% | -72.6% | -60.4% | -15.8% |
-| One-shot, 4 threads | +82.6% | **+84.0%** | - | - | - |
-| Stream, 4 threads | **+93.4%** | +84.5% | - | - | - |
+| One-shot | **+4.8%** | +4.2% | -69.6% | -21.5% | -13.2% |
+| Stream | **+5.2%** | +2.5% | -68.8% | -53.7% | -15.1% |
+| One-shot, 4 threads | **+98.3%** | +87.0% | - | - | - |
+| Stream, 4 threads | **+110.5%** | +79.9% | - | - | - |
 
 #### x86 (AMD Zen 3, 2026-11-04)
 

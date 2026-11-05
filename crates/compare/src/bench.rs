@@ -36,6 +36,8 @@ const LONG_PIECE: Range<usize> = 256..4096;
 const STREAM_CHUNK: usize = 128 << 10;
 // Output (and input) per call of the rust-zstd threaded streaming impl, which needs whole blocks.
 pub const STREAM_MT_CHUNK: usize = 4 << 20;
+// Synthetic data: benchmarked, but left out of the geomean.
+const SYNTHETIC_CASES: &[&str] = &["raw-4m", "rle-4m"];
 const DEFAULT_THREADS: usize = 4;
 const DEFAULT_ROUNDS: usize = 10;
 const MIB: f64 = (1 << 20) as f64;
@@ -486,7 +488,6 @@ fn rust_zstd_set_dictionary(decompressor: &mut rust_zstd::Decompressor, dictiona
 struct RuzstdImpl {
     decoder: ruzstd::decoding::FrameDecoder,
     buffer: Vec<u8>,
-    dictionary: Vec<u8>,
 }
 
 impl RuzstdImpl {
@@ -494,7 +495,6 @@ impl RuzstdImpl {
         Self {
             decoder: ruzstd::decoding::FrameDecoder::new(),
             buffer: Vec::new(),
-            dictionary: Vec::new(),
         }
     }
 }
@@ -506,22 +506,14 @@ impl Impl for RuzstdImpl {
 
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
         grow(&mut self.buffer, size);
-        let mut empty = &[][..];
-        let _ = self.decoder.reset(&mut empty);
-        if !self.dictionary.is_empty()
-            && let Ok(d) = ruzstd::decoding::Dictionary::decode_dict(&self.dictionary)
-        {
-            let _ = self.decoder.add_dict(d);
-        }
         self.decoder
             .decode_all(input, &mut self.buffer[..size])
             .expect("ruzstd failed");
+        ruzstd_check(&self.decoder);
         &self.buffer[..size]
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) {
-        self.dictionary.clear();
-        self.dictionary.extend_from_slice(dictionary);
         self.decoder = ruzstd::decoding::FrameDecoder::new();
         if !dictionary.is_empty()
             && let Ok(d) = ruzstd::decoding::Dictionary::decode_dict(dictionary)
@@ -531,10 +523,20 @@ impl Impl for RuzstdImpl {
     }
 }
 
+/// ruzstd does not verify the content checksum itself.
+fn ruzstd_check(decoder: &ruzstd::decoding::FrameDecoder) {
+    if let Some(stored) = decoder.get_checksum_from_data() {
+        assert_eq!(
+            Some(stored),
+            decoder.get_calculated_checksum(),
+            "ruzstd checksum"
+        );
+    }
+}
+
 struct RuzstdStream {
     decoder: ruzstd::decoding::FrameDecoder,
     buffer: Vec<u8>,
-    dictionary: Vec<u8>,
 }
 
 impl RuzstdStream {
@@ -542,7 +544,6 @@ impl RuzstdStream {
         Self {
             decoder: ruzstd::decoding::FrameDecoder::new(),
             buffer: Vec::new(),
-            dictionary: Vec::new(),
         }
     }
 }
@@ -555,13 +556,6 @@ impl Impl for RuzstdStream {
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
         use std::io::Read;
         grow(&mut self.buffer, size);
-        let mut empty = &[][..];
-        let _ = self.decoder.reset(&mut empty);
-        if !self.dictionary.is_empty()
-            && let Ok(d) = ruzstd::decoding::Dictionary::decode_dict(&self.dictionary)
-        {
-            let _ = self.decoder.add_dict(d);
-        }
         let mut streaming =
             ruzstd::decoding::StreamingDecoder::new_with_decoder(input, &mut self.decoder)
                 .expect("ruzstd stream failed");
@@ -576,12 +570,11 @@ impl Impl for RuzstdStream {
             }
             written += n;
         }
+        ruzstd_check(streaming.decoder);
         &self.buffer[..written]
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) {
-        self.dictionary.clear();
-        self.dictionary.extend_from_slice(dictionary);
         self.decoder = ruzstd::decoding::FrameDecoder::new();
         if !dictionary.is_empty()
             && let Ok(d) = ruzstd::decoding::Dictionary::decode_dict(dictionary)
@@ -592,15 +585,15 @@ impl Impl for RuzstdStream {
 }
 
 struct ZripImpl {
+    context: zrip::DecompressContext,
     buffer: Vec<u8>,
-    dictionary: Option<zrip::Dictionary>,
 }
 
 impl ZripImpl {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
+            context: zrip::DecompressContext::new(),
             buffer: Vec::new(),
-            dictionary: None,
         }
     }
 }
@@ -611,38 +604,47 @@ impl Impl for ZripImpl {
     }
 
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
-        if let Some(ref dict) = self.dictionary {
-            let res = zrip::decompress_with_dict(input, dict).expect("zrip failed");
-            grow(&mut self.buffer, res.len());
-            self.buffer[..res.len()].copy_from_slice(&res);
-            &self.buffer[..res.len()]
-        } else {
-            self.buffer.clear();
-            self.buffer.reserve(size);
-            let written = zrip::decompress_into(input, &mut self.buffer).expect("zrip failed");
-            &self.buffer[..written]
-        }
+        self.buffer.clear();
+        self.buffer.reserve(size);
+        let written = self
+            .context
+            .decompress_into(input, &mut self.buffer)
+            .expect("zrip failed");
+        &self.buffer[..written]
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) {
-        self.dictionary = if dictionary.is_empty() {
-            None
-        } else {
-            zrip::Dictionary::from_bytes(dictionary).ok()
-        };
+        self.context = zrip_dictionary(dictionary).map_or_else(
+            zrip::DecompressContext::new,
+            zrip::DecompressContext::with_dict,
+        );
+    }
+}
+
+/// The input of zrip's `FrameDecoder`, which `reset` keeps across calls: a raw slice, valid
+/// only during the `decompress` call that set it.
+struct ZripInput(*const [u8]);
+
+impl std::io::Read for ZripInput {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // SAFETY: only read inside `ZripStream::decompress`, while its input is alive.
+        let mut rest = unsafe { &*self.0 };
+        let n = rest.read(buf)?;
+        self.0 = rest;
+        Ok(n)
     }
 }
 
 struct ZripStream {
+    decoder: zrip::FrameDecoder<ZripInput>,
     buffer: Vec<u8>,
-    dictionary: Option<zrip::Dictionary>,
 }
 
 impl ZripStream {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
+            decoder: zrip::FrameDecoder::new(ZripInput(&[])),
             buffer: Vec::new(),
-            dictionary: None,
         }
     }
 }
@@ -655,54 +657,33 @@ impl Impl for ZripStream {
     fn decompress(&mut self, input: &[u8], size: usize) -> &[u8] {
         use std::io::Read;
         grow(&mut self.buffer, size);
-        if let Some(ref dict) = self.dictionary {
-            let mut decoder = zrip::FrameDecoder::with_dict(input, dict.clone());
-            let mut written = 0;
-            let mut failed = false;
-            while written < size {
-                let chunk = (size - written).min(STREAM_CHUNK);
-                match decoder.read(&mut self.buffer[written..written + chunk]) {
-                    Ok(0) => break,
-                    Ok(n) => written += n,
-                    Err(_) => {
-                        failed = true;
-                        break;
-                    }
-                }
+        self.decoder.reset(ZripInput(input));
+        let mut written = 0;
+        while written < size {
+            let chunk = (size - written).min(STREAM_CHUNK);
+            let n = self
+                .decoder
+                .read(&mut self.buffer[written..written + chunk])
+                .expect("zrip stream failed");
+            if n == 0 {
+                break;
             }
-            if !failed && written == size {
-                return &self.buffer[..written];
-            }
-            // zrip 0.8.13 has a bug in FrameDecoder::with_dict when window_size < dict.len():
-            // it truncates decode_history to window_size instead of preserving dict history.
-            let res = zrip::decompress_with_dict(input, dict).expect("zrip failed");
-            grow(&mut self.buffer, res.len());
-            self.buffer[..res.len()].copy_from_slice(&res);
-            &self.buffer[..res.len()]
-        } else {
-            let mut decoder = zrip::FrameDecoder::new(input);
-            let mut written = 0;
-            while written < size {
-                let chunk = (size - written).min(STREAM_CHUNK);
-                let n = decoder
-                    .read(&mut self.buffer[written..written + chunk])
-                    .expect("zrip stream failed");
-                if n == 0 {
-                    break;
-                }
-                written += n;
-            }
-            &self.buffer[..written]
+            written += n;
         }
+        &self.buffer[..written]
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) {
-        self.dictionary = if dictionary.is_empty() {
-            None
-        } else {
-            zrip::Dictionary::from_bytes(dictionary).ok()
-        };
+        self.decoder = zrip_dictionary(dictionary).map_or_else(
+            || zrip::FrameDecoder::new(ZripInput(&[])),
+            |dict| zrip::FrameDecoder::with_dict(ZripInput(&[]), dict),
+        );
     }
+}
+
+fn zrip_dictionary(dictionary: &[u8]) -> Option<zrip::Dictionary> {
+    (!dictionary.is_empty())
+        .then(|| zrip::Dictionary::from_bytes(dictionary).expect("dictionary refused"))
 }
 
 struct MzstdImpl {
@@ -908,6 +889,7 @@ pub fn cases(filters: &[String], large: bool) -> Vec<Case> {
     let keep = |name: &str| filters.is_empty() || filters.iter().any(|f| name.contains(f.as_str()));
     let mut out = Vec::new();
 
+    // File-like frames carry a checksum like `zstd` CLI files; small records do not.
     let mut skipped = Vec::new();
     let regular = CORPUS_FILES.iter().map(|file| (file, LEVELS));
     let large_files = LARGE_FILES
@@ -931,7 +913,11 @@ pub fn cases(filters: &[String], large: bool) -> Vec<Case> {
         let hash = content_hash(&source);
         for &&level in &levels {
             let name = format!("{base}-l{level}");
-            let frame = compress_cached(&name, &source, hash, &Params::level(level));
+            let params = Params {
+                checksum: true,
+                ..Params::level(level)
+            };
+            let frame = compress_cached(&name, &source, hash, &params);
             let range = 0..source.len();
             out.push(Case::new(name, source.clone(), vec![(frame, range)]));
         }
@@ -947,6 +933,7 @@ pub fn cases(filters: &[String], large: bool) -> Vec<Case> {
         let source = Arc::new(long_source());
         let hash = content_hash(&source);
         let params = Params {
+            checksum: true,
             window_log: LONG_WINDOW_LOG,
             long_distance: true,
             ..Params::level(LONG_LEVEL)
@@ -1200,6 +1187,7 @@ pub fn pretty(rows: &[Row], color: bool, speed: bool) -> String {
 
     let mut log_ratio_sums = vec![0.0; columns.len()];
     let mut case_count = 0;
+    let mut excluded = false;
     let push_cell = |out: &mut String, k: usize, text: String, ratio: Option<f64>| {
         out.push_str(&" ".repeat(gap(k) + widths[k].saturating_sub(text.len())));
         let code = match ratio {
@@ -1210,6 +1198,7 @@ pub fn pretty(rows: &[Row], color: bool, speed: bool) -> String {
         out.push_str(&paint(&text, code));
     };
     for case in rows.chunk_by(|a, b| a.case == b.case) {
+        let counted = !SYNTHETIC_CASES.contains(&case[0].case.as_str());
         let speeds: Vec<_> = case.iter().map(Row::mib_per_s).collect();
         let _ = write!(out, "{:<case_width$}", case[0].case);
         for (k, &(_, _, i, baseline)) in columns.iter().enumerate() {
@@ -1217,13 +1206,16 @@ pub fn pretty(rows: &[Row], color: bool, speed: bool) -> String {
                 None => push_cell(&mut out, k, format!("{:.0}", speeds[i]), None),
                 Some(b) => {
                     let ratio = speeds[i] / speeds[b];
-                    log_ratio_sums[k] += ratio.ln();
+                    if counted {
+                        log_ratio_sums[k] += ratio.ln();
+                    }
                     push_cell(&mut out, k, format_delta(ratio), Some(ratio));
                 }
             }
         }
         out.push('\n');
-        case_count += 1;
+        case_count += usize::from(counted);
+        excluded |= !counted;
     }
     if case_count > 1 {
         out.push_str(&paint(&format!("{:<case_width$}", "geomean"), "1;2"));
@@ -1234,6 +1226,9 @@ pub fn pretty(rows: &[Row], color: bool, speed: bool) -> String {
             } else {
                 push_cell(&mut out, k, String::new(), None);
             }
+        }
+        if excluded {
+            let _ = write!(out, "  (without {})", SYNTHETIC_CASES.join(", "));
         }
         out.push('\n');
     }
@@ -1358,7 +1353,8 @@ fn compress_cached(name: &str, data: &[u8], hash: u64, params: &Params) -> Vec<u
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/bench-cache"),
         PathBuf::from,
     );
-    let path = dir.join(format!("{name}-{hash:016x}.zst"));
+    let checksum = if params.checksum { "-xxh" } else { "" };
+    let path = dir.join(format!("{name}{checksum}-{hash:016x}.zst"));
     if let Ok(frame) = fs::read(&path) {
         return frame;
     }

@@ -28,6 +28,7 @@ let compressed: &[u8] = &[/* your .zst data */];
 
 let mut output = Vec::new();
 let mut decoder = Decoder::new();
+decoder.set_threads(0); // decode with all available cores
 let written = decoder.decompress_into_vec(compressed, &mut output)?;
 ```
 
@@ -38,16 +39,18 @@ Wrap any `BufRead` with `Reader`:
 ```rust ignore
 use std::fs::File;
 use std::io::{BufReader, Read};
-use zefiro::Reader;
+use zefiro::{Decoder, Reader};
 
 let file = BufReader::new(File::open("data.zst")?);
-let mut reader = Reader::new(file);
+let mut decoder = Decoder::new();
+decoder.set_threads(0); // decode with all available cores
+let mut reader = Reader::with_decoder(decoder, file);
 
 let mut decompressed = Vec::new();
 reader.read_to_end(&mut decompressed)?;
 ```
 
-To decompress large frames on several threads, call `decoder.set_threads(4)` before `decompress_into`, `decompress_stream` or `Reader::with_decoder(decoder, file)` (output is identical).
+To decompress large frames on several threads, call `decoder.set_threads(0)` (or a specific count like `4`) before `decompress_into`, `decompress_stream` or `Reader::with_decoder(decoder, file)` (output is identical).
 
 More advanced options (custom dictionaries, window limits, manual stream stepping) are detailed in the documentation.
 
@@ -87,14 +90,14 @@ cargo r -r -p compare --bin bench -- --exhaustive
 | One-shot, 4 threads | **+98.3%** | +87.0% | - | - | - |
 | Stream, 4 threads | **+110.5%** | +79.9% | - | - | - |
 
-#### x86 (AMD Zen 3, 2026-11-04)
+#### x86 (AMD Zen 3, 2026-11-05)
 
 | Mode | zefiro | rust-zstd | ruzstd | zrip | mzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | +5.8% | **+10.5%** | -72.3% | -27.0% | +2.0% |
-| Stream | +5.2% | **+8.4%** | -67.9% | -50.7% | -2.7% |
-| One-shot, 4 threads | **+65.3%** | +47.8% | - | - | - |
-| Stream, 4 threads | **+60.5%** | +33.5% | - | - | - |
+| One-shot | +6.5% | **+10.4%** | -68.2% | -17.9% | +0.9% |
+| Stream | +6.5% | **+8.8%** | -64.8% | -44.8% | -2.3% |
+| One-shot, 4 threads | +74.5% | **+94.6%** | - | - | - |
+| Stream, 4 threads | +68.4% | **+76.7%** | - | - | - |
 
 ## Acknowledgements
 

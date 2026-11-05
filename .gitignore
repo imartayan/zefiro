@@ -7,6 +7,7 @@ fuzz/coverage
 fuzz/*.log
 fuzz-*.log
 proptest-regressions
+*.tsv
 
 ref
 bench-ref

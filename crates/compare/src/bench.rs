@@ -292,9 +292,9 @@ impl Impl for OursStream {
                 .decompress_stream(input, output)
                 .expect("zefiro failed");
             Step {
-                consumed: progress.consumed,
-                written: progress.written,
-                done: progress.frame_done,
+                consumed: progress.consumed(),
+                written: progress.written(),
+                done: progress.frame_done(),
             }
         });
         &buffer[..written]

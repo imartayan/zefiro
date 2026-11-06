@@ -30,16 +30,31 @@ const OVERSIZED_FRAMES_MAX: u32 = 128;
 /// What one [`Decoder::decompress_stream`] call did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
-    /// Bytes of the input used. Once a frame is complete but its output not fully
-    /// written, the last input byte is held back and must be passed again.
-    pub consumed: usize,
-    /// Bytes written to the output.
-    pub written: usize,
-    /// A frame is complete and all its output written.
-    pub frame_done: bool,
+    pub(crate) consumed: usize,
+    pub(crate) written: usize,
+    pub(crate) frame_done: bool,
 }
 
 impl Progress {
+    /// Bytes of the input used. Once a frame is complete but its output not fully
+    /// written, the last input byte is held back and must be passed again.
+    #[must_use]
+    pub const fn consumed(&self) -> usize {
+        self.consumed
+    }
+
+    /// Bytes written to the output.
+    #[must_use]
+    pub const fn written(&self) -> usize {
+        self.written
+    }
+
+    /// A frame is complete and all its output written.
+    #[must_use]
+    pub const fn frame_done(&self) -> bool {
+        self.frame_done
+    }
+
     pub(crate) const fn new(consumed: usize, written: usize, frame_done: bool) -> Self {
         Self {
             consumed,

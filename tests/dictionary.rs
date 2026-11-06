@@ -67,7 +67,8 @@ fn golden_dictionaries_load_and_decode_as_libzstd_did() {
                 let progress = decoder
                     .decompress_stream(&input[consumed..end], &mut output[written..])
                     .unwrap();
-                (consumed, written) = (consumed + progress.consumed, written + progress.written);
+                (consumed, written) =
+                    (consumed + progress.consumed(), written + progress.written());
             }
             assert_eq!(verdict(Ok(written), &output), expected, "{line} (stream)");
             // And through a `Reader` that carries the dictionary.

@@ -287,15 +287,15 @@ fn decoder_reset_cleans_streaming_state_and_preserves_dictionaries() {
     // Partially decode frame1.
     let mut piece = [0u8; 500];
     let progress = decoder.decompress_stream(&frame1, &mut piece).unwrap();
-    assert!(!progress.frame_done);
-    assert!(progress.written > 0);
+    assert!(!progress.frame_done());
+    assert!(progress.written() > 0);
 
     // Reset decoder and decode frame2 cleanly.
     decoder.reset();
     let mut out = vec![0u8; 2000];
     let progress = decoder.decompress_stream(&frame2, &mut out).unwrap();
-    assert!(progress.frame_done);
-    assert_eq!(&out[..progress.written], &d2[..]);
+    assert!(progress.frame_done());
+    assert_eq!(&out[..progress.written()], &d2[..]);
 }
 
 #[test]
@@ -346,6 +346,6 @@ fn verify_checksum_bypass() {
     decoder.reset();
     let mut stream_out = vec![0u8; d.len()];
     let progress = decoder.decompress_stream(&input, &mut stream_out).unwrap();
-    assert!(progress.frame_done);
-    assert_eq!(&stream_out[..progress.written], &d[..]);
+    assert!(progress.frame_done());
+    assert_eq!(&stream_out[..progress.written()], &d[..]);
 }

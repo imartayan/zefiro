@@ -1,4 +1,4 @@
-//! The in-frame pipeline of NOTES/PARALLEL.md. A frame's compressed blocks go through three
+//! The in-frame pipeline. A frame's compressed blocks go through three
 //! stages: 1 reads the headers and Huffman and FSE tables in stream order, ahead of the
 //! execution, on the calling thread; 2 decodes literals and sequences from the job's copy of
 //! the block, on the workers (or on the caller when it would wait); 3 resolves the repeat

@@ -137,15 +137,17 @@ fn stream_pieces(
                 return result;
             }
             Ok(progress) => {
-                position += progress.consumed;
-                result.bytes.extend_from_slice(&buffer[..progress.written]);
-                if progress.consumed + progress.written > 0 || progress.frame_done {
-                    result.incomplete = !progress.frame_done;
+                position += progress.consumed();
+                result
+                    .bytes
+                    .extend_from_slice(&buffer[..progress.written()]);
+                if progress.consumed() + progress.written() > 0 || progress.frame_done() {
+                    result.incomplete = !progress.frame_done();
                 }
-                if position == input.len() && progress.frame_done {
+                if position == input.len() && progress.frame_done() {
                     return result;
                 }
-                let progressed = progress.consumed + progress.written > 0;
+                let progressed = progress.consumed() + progress.written() > 0;
                 // An empty input is the end of the input: nothing more is decoded.
                 if end == position && !progressed {
                     return result;

@@ -475,9 +475,9 @@ fn reused_decoders_agree_across_dictionaries() {
                 |i, o| {
                     let progress = decoder.decompress_stream(i, o)?;
                     Ok(Step {
-                        consumed: progress.consumed,
-                        written: progress.written,
-                        done: progress.frame_done,
+                        consumed: progress.consumed(),
+                        written: progress.written(),
+                        done: progress.frame_done(),
                     })
                 },
                 &frame.bytes,
@@ -517,7 +517,7 @@ fn set_dictionary_in_the_middle_of_a_stream_restarts() {
     decoder.set_dictionary(Some(&dictionary));
     let mut rest = vec![0; payload.len() + 10];
     let progress = decoder.decompress_stream(&frame.bytes, &mut rest).unwrap();
-    assert!(progress.frame_done && rest[..progress.written] == payload[..]);
+    assert!(progress.frame_done() && rest[..progress.written()] == payload[..]);
     decoder.set_dictionary(None);
     assert_eq!(
         decoder.decompress_stream(&frame.bytes, &mut rest),

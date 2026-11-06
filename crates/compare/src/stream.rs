@@ -96,9 +96,9 @@ pub fn stream_ours_dictionary(
     let step = |input: &[u8], output: &mut [u8]| {
         let progress = decoder.decompress_stream(input, output)?;
         Ok(Step {
-            consumed: progress.consumed,
-            written: progress.written,
-            done: progress.frame_done,
+            consumed: progress.consumed(),
+            written: progress.written(),
+            done: progress.frame_done(),
         })
     };
     run_stream(step, input, in_sizes, out_sizes)

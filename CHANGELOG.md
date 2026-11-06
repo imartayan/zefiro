@@ -3,6 +3,8 @@
 <!-- next-header -->
 ## [Unreleased]
 
+## 1.0.0
+
 First release: a zstd decoder in pure Rust, byte-identical to `libzstd` 1.5.7 on valid frames and differentially fuzzed against it.
 
 - One-shot (`Decoder::decompress_into`, `decompress_into_vec`, `decompress_into_uninit`) and streaming (`Decoder::decompress_stream`, `Reader`) decompression.

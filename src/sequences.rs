@@ -1156,9 +1156,13 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
             || before_segment
         {
             // SAFETY: the checks of `exec_sequence_cold` are the ones it needs.
+            #[cfg(target_arch = "x86_64")]
             return unsafe {
                 exec_sequence_cold(literal_length, match_length, offset, cursor, limits)
             };
+            // SAFETY: as above.
+            #[cfg(not(target_arch = "x86_64"))]
+            return unsafe { exec_sequence_cold(sequence, cursor, limits) };
         }
     } else {
         if literal_length > literals_left
@@ -1205,12 +1209,21 @@ unsafe fn exec_sequence<K: Kernel, const EXT: bool>(
 #[cold]
 #[inline(never)]
 unsafe fn exec_sequence_cold(
-    literal_length: usize,
-    match_length: usize,
-    offset: usize,
+    #[cfg(target_arch = "x86_64")] literal_length: usize,
+    #[cfg(target_arch = "x86_64")] match_length: usize,
+    #[cfg(target_arch = "x86_64")] offset: usize,
+    // Scalars here make LLVM if-convert the match length extras of the `EXT` loop on AArch64
+    // (serial stream chr2 -8%); on x86-64 they remove stack stores (+5%).
+    #[cfg(not(target_arch = "x86_64"))] sequence: Sequence,
     cursor: Cursor,
     limits: &Limits<'_>,
 ) -> Result<Cursor, Error> {
+    #[cfg(not(target_arch = "x86_64"))]
+    let Sequence {
+        literal_length,
+        match_length,
+        offset,
+    } = sequence;
     let literals_end = cursor.op.wrapping_add(literal_length);
     // SAFETY: the cursor's literals position never passes the end of the literals.
     let literals_left = unsafe {

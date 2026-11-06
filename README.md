@@ -81,22 +81,22 @@ cargo r -r -p compare --bin bench -- --exhaustive
 
 `--threads 4` adds the multi-threaded zefiro and rust-zstd with 4 threads, and `--large` adds larger inputs (fetched with `scripts/fetch-large-corpus.sh`).
 
-#### ARM (Apple M1, 2026-11-05)
+#### ARM (Apple M1, 2026-11-06)
 
 | Mode | zefiro | rust-zstd | ruzstd | zrip | mzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | **+4.8%** | +4.2% | -69.6% | -21.5% | -13.2% |
-| Stream | **+5.2%** | +2.5% | -68.8% | -53.7% | -15.1% |
-| One-shot, 4 threads | **+98.3%** | +87.0% | - | - | - |
-| Stream, 4 threads | **+110.5%** | +79.9% | - | - | - |
+| One-shot | **+5.5%** | +4.3% | -69.8% | -21.5% | -13.2% |
+| Stream | **+5.9%** | +2.9% | -68.9% | -53.7% | -14.9% |
+| One-shot, 4 threads | **+109.7%** | +87.6% | - | - | - |
+| Stream, 4 threads | **+117.6%** | +80.1% | - | - | - |
 
 #### x86 (AMD Zen 3, 2026-11-05)
 
 | Mode | zefiro | rust-zstd | ruzstd | zrip | mzstd |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| One-shot | +10.3% | **+10.8%** | -67.1% | -16.2% | +2.5% |
+| One-shot | **+10.5%** | **+10.5%** | -67.1% | -16.2% | +2.5% |
 | Stream | **+9.9%** | +8.8% | -64.1% | -44.3% | -1.8% |
-| One-shot, 4 threads | +89.1% | **+93.6%** | - | - | - |
+| One-shot, 4 threads | +90.1% | **+93.6%** | - | - | - |
 | Stream, 4 threads | **+80.3%** | +77.7% | - | - | - |
 
 ## Acknowledgements
